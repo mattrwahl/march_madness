@@ -15,6 +15,7 @@ from scrapers.cbbd_scraper import (
     get_adjusted_efficiency_ratings,
     get_team_season_stats,
     get_betting_lines,
+    get_conf_tournament_stats_by_team,
 )
 from config import HISTORICAL_SEASONS, DB_PATH
 
@@ -63,7 +64,7 @@ def load_season(conn, season: int) -> dict:
     Returns summary dict with counts.
     """
     logger.info(f"Loading season {season}...")
-    counts = {"games": 0, "teams": 0, "metrics": 0, "lines": 0}
+    counts = {"games": 0, "teams": 0, "metrics": 0, "lines": 0, "conf_tourney": 0}
 
     # --- Step 1: Tournament games ---
     games = get_tournament_games(season, tournament="NCAA")
@@ -186,8 +187,9 @@ def load_season(conn, season: int) -> dict:
                     (season, team_id,
                      adj_off_rating, adj_def_rating, net_rating, net_rank, def_rank,
                      efg_pct, opp_efg_pct, tov_ratio, oreb_pct, ft_rate,
-                     ft_pct, pace, seed_rank_gap)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     ft_pct, pace, seed_rank_gap,
+                     conf_tourney_wins, conf_tourney_avg_margin)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     season, team_id,
@@ -197,6 +199,7 @@ def load_season(conn, season: int) -> dict:
                     s.get("tov_ratio"), s.get("oreb_pct"), s.get("ft_rate"),
                     s.get("ft_pct"), s.get("pace"),
                     seed_rank_gap,
+                    None, None,  # conf_tourney_wins/avg_margin populated in Step 6
                 ),
             )
             counts["metrics"] += 1
@@ -232,9 +235,36 @@ def load_season(conn, season: int) -> dict:
             except Exception as e:
                 logger.warning(f"Error inserting line for game {line['cbbd_game_id']}: {e}")
 
+    # --- Step 6: Conference tournament stats ---
+    # Query games in the 3 weeks before the NCAA Tournament (Feb 25 - Mar 18)
+    # and aggregate per-team wins and avg point differential in conf tournaments.
+    conf_stats = get_conf_tournament_stats_by_team(season)
+    for team_name, stats in conf_stats.items():
+        team_id = team_id_map.get(team_name)
+        if not team_id:
+            continue
+        try:
+            conn.execute(
+                """
+                UPDATE mm_team_metrics
+                SET conf_tourney_wins = ?, conf_tourney_avg_margin = ?
+                WHERE season = ? AND team_id = ?
+                """,
+                (
+                    stats["conf_tourney_wins"],
+                    stats["conf_tourney_avg_margin"],
+                    season,
+                    team_id,
+                ),
+            )
+            counts["conf_tourney"] += 1
+        except Exception as e:
+            logger.warning(f"Error updating conf tourney stats for {team_name}: {e}")
+
     logger.info(
         f"Season {season}: {counts['games']} games, {counts['teams']} teams, "
-        f"{counts['metrics']} metrics rows, {counts['lines']} betting lines"
+        f"{counts['metrics']} metrics rows, {counts['lines']} betting lines, "
+        f"{counts['conf_tourney']} conf tourney updates"
     )
     return counts
 

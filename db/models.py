@@ -67,6 +67,9 @@ CREATE TABLE IF NOT EXISTS mm_team_metrics (
     pace            REAL,
     -- Derived
     seed_rank_gap   INTEGER,    -- net_rank - (seed * 10); negative = under-seeded
+    -- Conference tournament performance (V2 — momentum signal pre-NCAA tournament)
+    conf_tourney_wins       INTEGER,    -- games won in conference tournament
+    conf_tourney_avg_margin REAL,       -- avg point differential across all conf tourney games
     UNIQUE(season, team_id)
 );
 """
@@ -117,6 +120,11 @@ CREATE TABLE IF NOT EXISTS mm_model_weights (
     w_ft_pct        REAL,
     w_oreb_pct      REAL,
     w_pace          REAL,
+    -- V2 conference tournament features
+    w_conf_tourney_wins         REAL,
+    w_conf_tourney_avg_margin   REAL,
+    -- Variable-N threshold (NULL for fixed-8 models)
+    w_threshold     REAL,
     -- Performance metrics
     train_units_won REAL,
     val_units_won   REAL,

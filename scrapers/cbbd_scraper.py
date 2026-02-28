@@ -196,6 +196,87 @@ def get_team_season_stats(season: int, season_type: str = "regular") -> list[dic
     return results
 
 
+def get_conf_tournament_stats_by_team(season: int) -> dict[str, dict]:
+    """
+    Fetch conference tournament stats for all teams in a season.
+
+    Queries games in the ~3 weeks before the NCAA Tournament (Feb 25 - Mar 18),
+    filters to conference tournament games by game_notes, and aggregates per team:
+      - conf_tourney_wins:       total wins in conference tournament
+      - conf_tourney_avg_margin: avg point differential across ALL conf tourney games
+                                 (positive = winning on average; includes losses)
+
+    Returns dict: {team_name: {"conf_tourney_wins": int, "conf_tourney_avg_margin": float}}
+    Teams that don't appear in any conf tournament game are excluded.
+    """
+    from datetime import datetime as _dt
+    start_date = _dt(season, 2, 25)
+    end_date   = _dt(season, 3, 18)
+
+    with _get_api_client() as api_client:
+        games_api = cbbd.GamesApi(api_client)
+        try:
+            games = games_api.get_games(
+                season=season,
+                start_date_range=start_date,
+                end_date_range=end_date,
+            )
+        except Exception as e:
+            logger.warning(f"Error fetching conf tournament games for {season}: {e}")
+            return {}
+
+    # Aggregate per team: wins, games played, total margin
+    team_stats: dict[str, dict] = {}
+
+    for g in games:
+        notes = getattr(g, "game_notes", None) or ""
+        notes_lower = notes.lower()
+
+        # Must be a tournament game
+        if "tournament" not in notes_lower:
+            continue
+        # Exclude NCAA Tournament
+        if "men's basketball championship" in notes_lower:
+            continue
+        # Exclude NIT and other invitationals
+        if "nit" in notes_lower or "invitational" in notes_lower:
+            continue
+
+        home_team = getattr(g, "home_team", None)
+        away_team = getattr(g, "away_team", None)
+        home_pts  = getattr(g, "home_points", None)
+        away_pts  = getattr(g, "away_points", None)
+
+        if not home_team or not away_team:
+            continue
+        if home_pts is None or away_pts is None:
+            continue  # incomplete game
+
+        home_margin = home_pts - away_pts
+
+        for team, margin, won in [
+            (home_team,  home_margin,  home_margin > 0),
+            (away_team, -home_margin, -home_margin > 0),
+        ]:
+            if team not in team_stats:
+                team_stats[team] = {"wins": 0, "games": 0, "margin_sum": 0.0}
+            team_stats[team]["games"]      += 1
+            team_stats[team]["margin_sum"] += margin
+            if won:
+                team_stats[team]["wins"] += 1
+
+    result = {}
+    for team, stats in team_stats.items():
+        n = stats["games"]
+        result[team] = {
+            "conf_tourney_wins":       stats["wins"],
+            "conf_tourney_avg_margin": round(stats["margin_sum"] / n, 4) if n > 0 else 0.0,
+        }
+
+    logger.info(f"Conf tournament stats for {season}: {len(result)} teams found")
+    return result
+
+
 def get_lines_providers() -> list[str]:
     """Return available betting line providers from CBBD."""
     with _get_api_client() as api_client:

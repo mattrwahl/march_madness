@@ -20,10 +20,26 @@ logger = logging.getLogger(__name__)
 
 
 def init_db():
-    """Create all tables if they don't exist."""
+    """Create all tables if they don't exist, and run any pending migrations."""
     with get_db(DB_PATH) as conn:
         for ddl in ALL_TABLES:
             conn.execute(ddl)
+        # Migration: w_threshold column added for variable-N model
+        try:
+            conn.execute("ALTER TABLE mm_model_weights ADD COLUMN w_threshold REAL")
+        except Exception:
+            pass  # column already exists
+        # Migration: V2 conference tournament feature columns
+        for col_def in ["conf_tourney_wins INTEGER", "conf_tourney_avg_margin REAL"]:
+            try:
+                conn.execute(f"ALTER TABLE mm_team_metrics ADD COLUMN {col_def}")
+            except Exception:
+                pass
+        for col_def in ["w_conf_tourney_wins REAL", "w_conf_tourney_avg_margin REAL"]:
+            try:
+                conn.execute(f"ALTER TABLE mm_model_weights ADD COLUMN {col_def}")
+            except Exception:
+                pass
     logger.info(f"Database initialized at {DB_PATH}")
 
 
