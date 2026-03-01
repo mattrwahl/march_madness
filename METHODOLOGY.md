@@ -195,6 +195,36 @@ Key V1 limitations discovered:
 - R64 seed-pair collisions wasted roughly one slot per year on average
 - No momentum signal: a team finishing the regular season cold looked identical to one peaking at the right time
 
+### V3 Attempt — region_top4_net_avg (tried 2026-03-01, reverted)
+A single new feature was added and both models were retrained. The feature did not improve
+on any evaluation metric and V3 weights were discarded. V2 remains the active model.
+
+**Feature tested:** `region_top4_net_avg` — the average NET rank of seeds 1–4 in the
+eligible team's region. Computed on-the-fly via a SQL CTE (no new scraping; data already
+exists in `mm_tournament_entries` + `mm_team_metrics`). The hypothesis was that a team in a
+weak region (high average NET rank = poor top seeds) faces an easier path and is therefore
+undervalued by the market.
+
+**Why it failed:** The feature is a region-level constant — all four eligible seeds in a
+region share the identical value. This gives the optimizer nothing to discriminate *within*
+a region, which is where most selection decisions happen (multiple seeds 7–12 from the same
+region compete for the same picks). The signal adds inter-region noise rather than
+intra-region signal, and the variable-N model's val ROI collapsed to -0.008u/pick vs V2's
++0.547u/pick.
+
+**Results vs targets:**
+
+| Metric | V2 | V3 |
+|---|---|---|
+| Overlap 11-season total | **+43.19u** | +39.91u |
+| Overlap test 2025 ROI | **+0.496/pick** | +0.233/pick |
+| Variable-N val ROI | **+0.547u/pick** | -0.008u/pick |
+
+The code infrastructure (11th weight column in `mm_model_weights`, CTE in
+`load_eligible_teams()`, weight slot in all load/save functions) remains in place.
+V2 weights load with `w_region_top4_net_avg = 0.0` (NULL fallback), so the feature
+is inert unless new weights are trained that assign it a non-zero value.
+
 ### V2 — Current Model
 All V1 limitations addressed:
 
@@ -337,6 +367,26 @@ Overlap-tiered     +39.22u    +0.90     +3.97u      +1.98   <-- PRIMARY
 Score-tiered       +34.37u    +1.03     +3.14u      +1.56
 Flat               +32.62u    +0.51     +3.29u      +1.64
 ```
+
+### Tried and Rejected Features
+
+**`region_top4_net_avg`** — average NET rank of seeds 1–4 in the eligible team's region.
+Attempted as a "path difficulty" signal: a weak region means an easier route to E8/F4.
+Failed because it is a region-level constant (all eligible teams in a region share the
+same value), providing no discriminating power within a region. The variable-N model's
+val ROI dropped from +0.547 to -0.008 u/pick. Reverted to V2. See the V3 entry in Model
+Iterations above for full results.
+
+**Q1 wins** — considered as a measure of strength-of-schedule performance. Rejected
+because NET rank already incorporates quadrant win/loss records as a direct input, making
+Q1 wins redundant with `net_rating` and `seed_rank_gap`. Incremental signal too small to
+justify an additional correlated feature on an 8-season training set.
+
+**Last-10-regular-season margin** — considered as a "hot team" signal alongside conference
+tournament features. Rejected because inter-conference comparability is poor: a team in the
+Big Ten finishing the season against Michigan/Purdue faces a fundamentally different test
+than a team in the Sun Belt playing conference cellar-dwellers. Conference tournament margins
+are intra-conference, making them directly comparable.
 
 ### 2026 Data Availability
 Conference tournament data for 2026 will not be fully available until mid-March. The

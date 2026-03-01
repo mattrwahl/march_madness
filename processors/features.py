@@ -29,6 +29,8 @@ FEATURES = [
     # V2: conference tournament momentum features
     ("conf_tourney_wins",      False),   # more conf tourney wins = hotter team
     ("conf_tourney_avg_margin", False),  # higher avg margin = dominant momentum
+    # V3: region path difficulty
+    ("region_top4_net_avg",    False),   # higher = weaker region top seeds = easier path
 ]
 
 FEATURE_NAMES = [f[0] for f in FEATURES]
@@ -63,6 +65,17 @@ def load_eligible_teams(conn: sqlite3.Connection, season: int) -> list[dict]:
     seed_placeholders = ",".join("?" * len(ELIGIBLE_SEEDS))
     rows = conn.execute(
         f"""
+        WITH region_strength AS (
+            SELECT
+                te2.season,
+                te2.region,
+                AVG(m2.net_rank) AS region_top4_net_avg
+            FROM mm_tournament_entries te2
+            JOIN mm_team_metrics m2
+              ON m2.team_id = te2.team_id AND m2.season = te2.season
+            WHERE te2.seed <= 4
+            GROUP BY te2.season, te2.region
+        )
         SELECT
             te.team_id,
             te.seed,
@@ -82,10 +95,12 @@ def load_eligible_teams(conn: sqlite3.Connection, season: int) -> list[dict]:
             m.pace,
             m.seed_rank_gap,
             m.conf_tourney_wins,
-            m.conf_tourney_avg_margin
+            m.conf_tourney_avg_margin,
+            rs.region_top4_net_avg
         FROM mm_tournament_entries te
         JOIN mm_teams t ON t.id = te.team_id
         LEFT JOIN mm_team_metrics m ON m.team_id = te.team_id AND m.season = te.season
+        LEFT JOIN region_strength rs ON rs.season = te.season AND rs.region = te.region
         WHERE te.season = ?
           AND te.seed IN ({seed_placeholders})
           AND te.team_id NOT IN (

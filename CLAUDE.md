@@ -189,6 +189,27 @@ python main.py track [--season Y]    # update rolling payouts during tournament
 3. Run `python main.py report --overlap` to review historical overlap-tiered performance
 4. Run `python main.py track` after each round to update payouts
 
+## V3 Attempt — region_top4_net_avg (implemented 2026-03-01, REVERTED)
+- **Feature added**: `region_top4_net_avg` — average NET rank of seeds 1-4 in the team's region
+  - Code changes fully implemented in features.py, db/db.py, and processors/model.py
+  - Computed via CTE in load_eligible_teams(); no new DB column in mm_team_metrics
+  - mm_model_weights has w_region_top4_net_avg column (added via migration)
+- **Retrained**: fixed-8 V3 (id=13) and variable-N V3 (id=14) — then deleted after comparison
+- **Results vs V2 targets (FAILED all three):**
+  - Overlap train+val (10 seasons): V3 +38.04u vs V2 +39.22u (worse)
+  - Overlap test 2025: V3 +1.87u (ROI +0.233) vs V2 +3.97u (ROI +0.496) (much worse)
+  - Variable-N val: V3 -0.064u/8 picks vs V2 +1.48u/8 picks (much worse)
+- **Conclusion**: V3 did not improve; V2 weights (ids 11/12) remain active.
+  The region feature hurt the variable-N model significantly; root cause likely that
+  region strength is a region-level constant (all 4 eligible seeds in a region share
+  the same value), providing no within-region discrimination — it adds noise to the
+  optimizer rather than signal. Feature code remains in place (load_eligible_teams
+  returns the column); it will simply be ignored if V2 weights are loaded (11th
+  weight = 0.0 fallback).
+- **Q1 wins: considered and rejected** — already partially captured by seed_rank_gap since
+  NET rank uses quadrant records as a direct input; incremental signal too small to justify
+  an additional correlated feature on an 8-season training set
+
 ## Superset Connection
 Add to docker-compose.yml: `../march_madness/data:/app/mm_data:ro`
 SQLAlchemy URI: `sqlite:////app/mm_data/march_madness.db`

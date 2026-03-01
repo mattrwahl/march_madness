@@ -40,6 +40,11 @@ def init_db():
                 conn.execute(f"ALTER TABLE mm_model_weights ADD COLUMN {col_def}")
             except Exception:
                 pass
+        # Migration: V3 region strength feature
+        try:
+            conn.execute("ALTER TABLE mm_model_weights ADD COLUMN w_region_top4_net_avg REAL")
+        except Exception:
+            pass
     logger.info(f"Database initialized at {DB_PATH}")
 
 
