@@ -310,11 +310,33 @@ those teams to NULL (treated as league average). The backfill logs a count of su
 matches per season for monitoring.
 
 ### Variable-N Model
-The variable-N model converged to always picking exactly 4 teams (the minimum floor),
-suggesting the ROI objective strongly prefers concentration. This model has not yet been
-retrained with V2 features (collision guard, conf tourney). It remains a useful reference
-for identifying the model's highest-conviction picks but should not be used as a standalone
-betting system until retrained.
+The variable-N V2 model (retrained with all V2 features: collision guard, conf tourney,
+L2 regularization) converged to always picking exactly 4 teams (the minimum floor),
+suggesting the ROI objective strongly prefers concentration. Rather than using it as a
+standalone betting system, it is used as a conviction signal within the overlap-tiered
+strategy: its 4 picks that overlap with the fixed-8 pool receive a higher stake.
+
+### Overlap-Tiered Strategy
+The primary betting strategy combines both models into a single budget-neutral system.
+For each year's 8 fixed-8 V2 picks:
+- Picks also flagged by variable-N V2 ("overlap"): receive `overlap_bet`
+- Picks only in fixed-8 V2 ("solo"): receive `solo_bet`
+- 3:1 ratio is maintained: `overlap_bet = 3 * solo_bet`
+- Total is always $200/yr: `n * overlap_bet + (8-n) * solo_bet = $200`
+  - Solving: `solo_bet = 200 / (2n + 8)`, `overlap_bet = 600 / (2n + 8)`
+
+The key insight: when both models independently agree on a pick using different objectives
+(total units vs ROI), that agreement is a stronger conviction signal than either model's
+internal score rank alone. In 2021 and 2022 (years with 4/4 overlap), the strategy
+returned +8.65u and +10.43u respectively vs +6.07u and +7.44u flat.
+
+Historical performance vs flat and score-tiered (all $200/yr, 11 seasons 2014-2025):
+```
+Strategy           Train+Val   Val ROI   Test 2025   ROI/$100
+Overlap-tiered     +39.22u    +0.90     +3.97u      +1.98   <-- PRIMARY
+Score-tiered       +34.37u    +1.03     +3.14u      +1.56
+Flat               +32.62u    +0.51     +3.29u      +1.64
+```
 
 ### 2026 Data Availability
 Conference tournament data for 2026 will not be fully available until mid-March. The

@@ -13,6 +13,8 @@ Usage:
     python main.py report --test                      # run on holdout test season (2025)
     python main.py report --tiered                    # tiered vs flat conviction comparison
     python main.py report --tiered --test             # tiered comparison on holdout test (2025)
+    python main.py report --overlap                   # overlap-tiered vs flat (PRIMARY strategy)
+    python main.py report --overlap --test            # overlap-tiered on holdout test (2025)
 
     # Variable-N model (threshold-based selection, ROI objective):
     python main.py train --variable
@@ -267,6 +269,25 @@ def cmd_report(args):
                   f"cash_out={args.cash_out}. Run: python main.py train")
             sys.exit(1)
 
+        if args.overlap:
+            from processors.model import load_latest_weights_variable, print_overlap_report
+            var_result = load_latest_weights_variable(
+                conn, cash_out_round=args.cash_out, bet_style=args.bet_style,
+            )
+            if var_result is None:
+                print("No variable-N weights found. Run: python main.py train --variable")
+                sys.exit(1)
+            w_var, threshold = var_result
+            seasons = TEST_SEASONS if args.test else TRAIN_SEASONS + VAL_SEASONS
+            lbl = f"OVERLAP-TIERED vs FLAT — HOLDOUT TEST ({TEST_SEASONS})" if args.test else None
+            print_overlap_report(
+                conn, weights, w_var, threshold,
+                seasons=seasons,
+                cash_out_round=args.cash_out,
+                label=lbl,
+            )
+            return
+
         if args.tiered:
             # Tiered vs flat comparison
             seasons = TEST_SEASONS if args.test else TRAIN_SEASONS + VAL_SEASONS
@@ -355,6 +376,8 @@ def main():
                           help="Use variable-N threshold model")
     p_report.add_argument("--tiered", action="store_true",
                           help="Show tiered conviction vs standard flat comparison")
+    p_report.add_argument("--overlap", action="store_true",
+                          help="Show overlap-tiered vs flat (PRIMARY strategy)")
     p_report.set_defaults(func=cmd_report)
 
     args = parser.parse_args()

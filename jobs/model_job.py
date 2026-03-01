@@ -17,8 +17,14 @@ from scrapers.cbbd_scraper import (
     get_team_season_stats,
     get_betting_lines,
 )
-from processors.features import load_eligible_teams, select_picks
-from processors.model import load_latest_weights, simulate_season
+from processors.features import (
+    load_eligible_teams, select_picks, select_picks_threshold,
+    MIN_PICKS_PER_YEAR, MAX_PICKS_PER_YEAR,
+)
+from processors.model import (
+    load_latest_weights, load_latest_weights_variable,
+    simulate_season, overlap_bet_sizes,
+)
 from config import DB_PATH, CURRENT_SEASON, NUM_PICKS, INITIAL_BET_DOLLARS
 
 from shared.sqlite_helpers import get_db
@@ -37,8 +43,15 @@ def fetch_current_season_data(conn, season: int):
 
 def generate_picks(conn, season: int, weights=None) -> list[dict]:
     """
-    Generate the 8 picks for the given season.
-    If weights is None, loads the most recent trained weights from DB.
+    Generate the 8 picks for the given season with overlap-tiered bet sizing.
+
+    Loads both fixed-8 V2 and variable-N V2 weights. Picks flagged by both
+    models are assigned a higher bet (overlap tier); fixed-8-only picks get
+    the lower bet. Total always $200/yr (3:1 ratio, budget-neutral).
+
+    Each returned pick dict has two extra keys:
+      bet_dollars    — per-round flat bet for this pick
+      in_variable_n  — True if also selected by variable-N V2
     """
     import numpy as np
 
@@ -46,7 +59,6 @@ def generate_picks(conn, season: int, weights=None) -> list[dict]:
         weights = load_latest_weights(conn)
 
     if weights is None:
-        # Fallback: equal weights if no trained weights exist
         from processors.features import FEATURE_NAMES
         logger.warning("No trained weights found — using equal weights")
         weights = np.ones(len(FEATURE_NAMES))
@@ -57,12 +69,32 @@ def generate_picks(conn, season: int, weights=None) -> list[dict]:
                          f"Has the bracket been loaded? Run backfill first.")
 
     picks = select_picks(teams, weights, NUM_PICKS)
+
+    # Determine overlap with variable-N V2 for bet sizing
+    var_result = load_latest_weights_variable(conn)
+    if var_result is not None:
+        w_var, threshold = var_result
+        picks_v = select_picks_threshold(
+            teams, w_var, threshold, MIN_PICKS_PER_YEAR, MAX_PICKS_PER_YEAR
+        )
+        var_ids = {p["team_id"] for p in picks_v}
+    else:
+        logger.warning("No variable-N weights found — falling back to flat $25 sizing")
+        var_ids = set()
+
+    fids = {p["team_id"] for p in picks}
+    n_ol = len(fids & var_ids)
+    ol_bet, solo_bet = overlap_bet_sizes(n_ol)
+
+    for pick in picks:
+        pick["in_variable_n"] = pick["team_id"] in var_ids
+        pick["bet_dollars"]   = ol_bet if pick["in_variable_n"] else solo_bet
+
     return picks
 
 
 def save_picks(conn, season: int, picks: list[dict]):
-    """Insert picks into mm_model_picks."""
-    # Clear existing picks for this season first
+    """Insert picks into mm_model_picks with per-pick overlap-tiered bet sizing."""
     conn.execute("DELETE FROM mm_model_picks WHERE season = ?", (season,))
 
     for pick in picks:
@@ -79,7 +111,7 @@ def save_picks(conn, season: int, picks: list[dict]):
                 pick["seed"],
                 pick["pick_rank"],
                 pick["model_score"],
-                INITIAL_BET_DOLLARS,
+                pick.get("bet_dollars", INITIAL_BET_DOLLARS),
             ),
         )
 
@@ -108,28 +140,37 @@ def get_opening_lines(conn, team_id: int, season: int) -> dict | None:
 
 
 def print_pick_sheet(conn, season: int, picks: list[dict]):
-    """Print a formatted pick sheet to stdout."""
-    print(f"\n{'=' * 70}")
+    """Print a formatted pick sheet with overlap-tiered bet sizing."""
+    n_ol = sum(1 for p in picks if p.get("in_variable_n"))
+    ol_bet, solo_bet = overlap_bet_sizes(n_ol)
+
+    print(f"\n{'=' * 78}")
     print(f"MARCH MADNESS MODEL PICKS — {season}")
-    print(f"{'=' * 70}")
-    print(f"{'#':>3}  {'Team':<28} {'Seed':>4}  {'Score':>7}  {'R64 Line':>9}  {'Notes'}")
-    print(f"{'-' * 70}")
+    print(f"{'=' * 78}")
+    print(f"{'#':>3}  {'Team':<28} {'Seed':>4}  {'Score':>7}  {'R64 Line':>9}  {'Bet/rnd':>7}  Notes")
+    print(f"{'-' * 78}")
 
     for pick in picks:
         line_info = get_opening_lines(conn, pick["team_id"], season)
-        ml_str = f"{line_info['team_ml']:+d}" if line_info and line_info.get("team_ml") else "  N/A"
-        region = pick.get("region", "")
+        ml_str    = f"{line_info['team_ml']:+d}" if line_info and line_info.get("team_ml") else "  N/A"
+        region    = pick.get("region", "")
+        bet       = pick.get("bet_dollars", INITIAL_BET_DOLLARS)
+        conv_mark = " [BOTH]" if pick.get("in_variable_n") else ""
         print(
             f"{pick['pick_rank']:>3}. {pick['team_name']:<28} "
             f"#{pick['seed']:>2}  "
-            f"{pick['model_score']:>+7.3f}  "
+            f"{pick['model_score']:>+7.4f}  "
             f"{ml_str:>9}  "
-            f"{region}"
+            f"${bet:>6.2f}  "
+            f"{region}{conv_mark}"
         )
 
-    print(f"\n  Strategy: $25 per pick, roll winnings through R64 → R32 → S16 → E8")
-    print(f"  Cash out at Elite Eight. Max loss: ${NUM_PICKS * INITIAL_BET_DOLLARS:.0f}")
-    print(f"{'=' * 70}\n")
+    budget = NUM_PICKS * INITIAL_BET_DOLLARS
+    print(f"\n  Strategy: overlap-tiered, ${budget:.0f}/yr total stake")
+    print(f"  [BOTH] flagged by both fixed-8 V2 and variable-N V2 -> ${ol_bet:.2f}/round")
+    print(f"  Fixed-8 only -> ${solo_bet:.2f}/round  |  {n_ol} of 8 picks are [BOTH]")
+    print(f"  Cash out at Elite Eight  |  Max loss: ${budget:.0f}")
+    print(f"{'=' * 78}\n")
 
 
 def run(season: int | None = None, fetch_data: bool = True):

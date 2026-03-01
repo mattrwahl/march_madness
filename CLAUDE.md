@@ -1,9 +1,10 @@
 # March Madness Betting Model — Claude Context
 
 ## Project Purpose
-Identify under-seeded NCAA Tournament teams (seeds 5-12) and bet $25/quarter-unit
-per team per round using a flat betting strategy, locking in profits each round
-independently. Optimize for total units won (fixed model) and ROI per pick (variable model).
+Identify under-seeded NCAA Tournament teams (seeds 5-12) and bet using an
+overlap-tiered flat strategy: picks flagged by both fixed-8 V2 and variable-N V2
+receive a higher stake; fixed-8-only picks receive a lower stake. Total always
+$200/yr (3:1 ratio, budget-neutral). Profits locked in each round independently.
 
 ## Stack
 - **Python 3.12** — all pipeline code
@@ -51,21 +52,33 @@ pools — they have not yet earned their bracket slot. This is enforced in `load
 
 ## Bet Styles
 
-### Flat (default — recommended)
-- Bet $25 each round independently per team.
+### Overlap-Tiered (PRIMARY — use for 2026)
+- Pool = fixed-8 V2 picks (always 8 teams).
+- Picks also flagged by variable-N V2 ("both models"): **higher stake/round**.
+- Picks only in fixed-8 V2: **lower stake/round**.
+- 3:1 ratio maintained; total always $200/yr regardless of overlap count.
+  - 4 overlap → $37.50 / $12.50   3 overlap → $42.86 / $14.29
+  - 2 overlap → $50.00 / $16.67   1 overlap → $60.00 / $20.00
+  - 0 overlap → $25.00 / $25.00  (reduces to flat)
 - Winning a round locks in that round's profit; stake is NOT carried forward.
-- Losing a round costs only that round's $25; prior profits are kept.
 - Two picks meeting each other: stop betting (no bet placed that round).
-- `units = (sum_of_round_profits - sum_of_round_losses) / 100`
+- **Train+val (11 seasons)**: +43.19u, avg +3.93u/yr — best of all strategies.
+- **Train ROI/$100**: +2.23  **Val ROI/$100**: +0.90  **Test 2025 ROI/$100**: +1.98
+- Run with: `python main.py report --overlap`
+- Pick sheet (`python main.py picks`) shows `[BOTH]` marker and per-pick bet size.
 
-### Tiered Conviction (V2 — comparison available)
+### Flat (reference — superseded by overlap-tiered)
+- Bet $25 each round independently per team. Total $200/yr.
+- **Train+val**: +29.33u  **2025 test**: +3.29u  ROI/$100: +1.48
+- Still useful as a baseline comparison.
+
+### Tiered Conviction (reference — superseded by overlap-tiered)
 - Top 4 picks (by model score): $37.50/round. Bottom 4 picks: $12.50/round.
-- Same total budget as flat ($200/yr). Amplifies wins/losses on high-conviction picks.
-- **Train+val**: +31.23u vs +29.33u flat (+1.90u); ROI +0.3903 vs +0.3666 u/pick.
-- **2025 test**: +3.14u vs +3.29u flat (-0.14u — essentially equal).
+- Same total budget ($200/yr). Assigns higher stake by score rank, not model agreement.
+- **Train+val**: +34.37u  **2025 test**: +3.14u  ROI/$100: +1.56
 - Run with: `python main.py report --tiered`
 
-### Rollover (comparison only — not recommended for 2026)
+### Rollover (comparison only — not recommended)
 - $25 initial stake compounds forward through each win.
 - A loss at any round returns $0 (full current stake lost).
 - High variance; optimizer overfits heavily on training data.
@@ -84,13 +97,13 @@ Team stops being bet on after winning a game in the target round:
 
 ## Models
 
-### Fixed-8 Flat/E8 V2 (PRIMARY — use for 2026)
+### Fixed-8 Flat/E8 V2 (pick selection — combined with variable-N for bet sizing)
 - Selects exactly 8 teams from seeds 5-12 each year by composite score
 - **R64 collision guard**: skips any candidate that would face an already-selected pick in R64
   (same region, complementary seed pair: 5v12, 6v11, 7v10, 8v9)
 - **L2 regularization**: lambda=0.01 added to training objective
 - **10 features** (8 original + 2 new conference tournament features)
-- **Train+val (10 seasons)**: +29.33u, avg +2.93u/yr, only 1 losing year (2017: -0.50u)
+- **Train+val (10 seasons)**: +29.33u flat, avg +2.93u/yr, only 1 losing year (2017: -0.50u)
 - **Val (2023+2024)**: +2.04u (-0.65u / +2.68u)
 - **2025 test**: +3.29u (Ole Miss S16 +1.25u, Arkansas S16 +1.88u)
 - Weights stored in `mm_model_weights` with `notes LIKE 'cash_out=E8 bet_style=flat%'`
@@ -100,23 +113,27 @@ Team stops being bet on after winning a game in the target round:
 - Train+val: +12.70u | 2025 test: -0.65u
 - V2 is strictly better on all splits; do not retrain with old feature set
 
-### Variable-N Flat/E8 (REFERENCE — informative but not primary)
+### Variable-N Flat/E8 V2 (conviction signal — used for overlap bet sizing)
 - Threshold-based selection: picks all teams with composite z-score >= threshold
   (self-normalized within each year's eligible field)
 - Optimizes N+1 params: 10 feature weights + z-score threshold
 - Objective: ROI (units/pick) rather than total units
 - Min picks/yr: 4, Max picks/yr: 12
-- **Optimizer converged to threshold=1.815** — effectively always picks exactly 4 (the floor)
-- Key weakness: with only 4 picks, an 8v9 collision wastes 50% of the year; needs retrain with V2 collision guard
-- Run: `python main.py train --variable` then `python main.py report --variable`
+- **V2: threshold=1.252** — always picks exactly 4 (min floor); high ROI concentration
+- V2 includes R64 collision guard and 10-feature set (same as fixed-8 V2)
+- **Train+val (10 seasons)**: +21.89u / 40 picks (ROI +0.5473u/pick)
+- **2025 test**: +1.58u / 4 picks (ROI +0.3949u/pick) — Arkansas S16 +1.875u
+- Used by `picks` command to determine [BOTH] overlap picks (higher bet tier)
+- Weights stored in `mm_model_weights` with `notes LIKE '%model=variable%'`
 
-### Comparison Summary (train+val, 10 seasons, V2 weights)
+### Comparison Summary (train+val, 11 seasons incl. 2025 test)
 ```
-Strategy               Total Units   Picks/yr   ROI/pick    2025 test
-fixed flat/E8 V2       +29.33u       8          +0.367u     +3.29u   <-- PRIMARY
-fixed tiered/E8 V2     +31.23u       8          +0.390u     +3.14u   <-- alternative
-fixed flat/E8 V1       +12.70u       8          +0.159u     -0.65u   <-- archived
-variable flat/E8 V1    +9.34u        4          +0.234u     -0.28u   <-- reference (needs V2 retrain)
+Strategy                  Total Units   Budget/yr   ROI/$100    2025 test ROI/$100
+overlap-tiered V2         +43.19u       $200        +1.72       +1.98   <-- PRIMARY
+fixed tiered/E8 V2        +34.37u       $200        +1.56       +1.57
+fixed flat/E8 V2          +32.62u       $200        +1.48       +1.64
+variable flat/E8 V2       +21.89u       var         +0.55/pick  +1.58/4picks
+fixed flat/E8 V1          +12.70u       $200        --          -0.65   <-- archived
 ```
 
 ## Selection Features (composite score) — V2: 10 features
@@ -144,30 +161,33 @@ collisions that produce $0 returns. Implemented via `_r64_collision()` in `featu
 python main.py backfill              # load all missing seasons
 python main.py backfill --season Y   # load/reload one specific season
 
-# Fixed-8 model (primary)
+# Fixed-8 model (pick selection)
 python main.py train                         # flat/E8 (defaults), 10 features + L2
 python main.py train --compare               # all 6 variants: flat+rollover x s16+e8+f4
 python main.py report                        # flat/E8 on train+val seasons
 python main.py report --test                 # holdout test (2025)
-python main.py report --tiered               # tiered vs flat side-by-side (train+val)
-python main.py report --tiered --test        # tiered vs flat on 2025 holdout
+python main.py report --overlap              # overlap-tiered vs flat (PRIMARY)
+python main.py report --overlap --test       # overlap-tiered on 2025 holdout
+python main.py report --tiered               # tiered vs flat side-by-side (reference)
+python main.py report --tiered --test        # tiered vs flat on 2025 holdout (reference)
 
-# Variable-N model
+# Variable-N model (conviction signal for overlap sizing)
 python main.py train --variable              # threshold-based, flat/E8, ROI objective
 python main.py report --variable             # variable-N report on train+val
 python main.py report --variable --test      # variable-N on 2025
 
 # Tournament workflow
-python main.py picks [--season Y]    # generate picks (defaults to 2026)
+python main.py picks [--season Y]    # generate 8 picks with overlap-tiered bet sizing
 python main.py track [--season Y]    # update rolling payouts during tournament
 ```
 
 ## 2026 Workflow
 1. Run `python main.py backfill --season 2026` after Selection Sunday data is available
-2. Run `python main.py picks` to generate 8 picks using fixed flat/E8 V2 weights
-3. Run `python main.py report --tiered` to see flat vs tiered split for conviction sizing
-4. Decide: flat $25/pick or tiered $37.50/$12.50 based on confidence in pick ordering
-5. Run `python main.py track` after each round to update payouts
+2. Run `python main.py picks` — outputs 8 picks with per-pick bet size already computed
+   - [BOTH] picks = flagged by both models → higher stake (overlap tier)
+   - Fixed-8 only picks → lower stake; total always $200/yr
+3. Run `python main.py report --overlap` to review historical overlap-tiered performance
+4. Run `python main.py track` after each round to update payouts
 
 ## Superset Connection
 Add to docker-compose.yml: `../march_madness/data:/app/mm_data:ro`

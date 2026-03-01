@@ -1024,3 +1024,192 @@ def print_tiered_comparison_report(
           f"{delta_total:>+10.3f}u")
     print(f"  {'ROI/pick':<10} {flat_roi:>+10.4f}  {tiered_roi:>+10.4f}")
     print("=" * 72)
+
+# ---------------------------------------------------------------------------
+# Overlap-tiered strategy
+# ---------------------------------------------------------------------------
+
+OVERLAP_RATIO = 3.0   # overlap picks bet 3x the stake of solo picks
+
+
+def overlap_bet_sizes(
+    n_overlap: int,
+    budget: float = INITIAL_BET_DOLLARS * NUM_PICKS,
+    ratio: float = OVERLAP_RATIO,
+) -> tuple[float, float]:
+    """
+    Return (overlap_bet, solo_bet) for the budget-neutral overlap strategy.
+
+    Maintains `ratio`:1 weighting between picks flagged by both models vs
+    fixed-8 only, while keeping total stake = budget regardless of n_overlap.
+
+    Derivation: n*ratio*Y + (NUM_PICKS-n)*Y = budget
+                Y = budget / (n*(ratio-1) + NUM_PICKS)
+
+    With ratio=3, budget=$200:
+      n=4 -> $37.50 / $12.50   (same amounts as tiered, different assignment)
+      n=3 -> $42.86 / $14.29
+      n=2 -> $50.00 / $16.67
+      n=1 -> $60.00 / $20.00
+      n=0 -> $25.00 / $25.00   (reduces to flat)
+    """
+    if n_overlap == 0:
+        flat = budget / NUM_PICKS
+        return flat, flat
+    solo = budget / (n_overlap * (ratio - 1) + NUM_PICKS)
+    return ratio * solo, solo
+
+
+def simulate_season_overlap(
+    conn: sqlite3.Connection,
+    season: int,
+    w_fixed: np.ndarray,
+    w_var: np.ndarray,
+    threshold: float,
+    cash_out_round: int = DEFAULT_CASH_OUT_ROUND,
+    min_picks: int = MIN_PICKS_PER_YEAR,
+    max_picks: int = MAX_PICKS_PER_YEAR,
+) -> float:
+    """
+    Simulate one season using the overlap-tiered strategy.
+
+    Takes the fixed-8 pool and weights by cross-model agreement:
+      - Picks also flagged by variable-N V2: overlap_bet per round
+      - Picks only in fixed-8 V2:            solo_bet per round
+    Total stake always = $200 (budget-neutral, 3:1 ratio).
+    """
+    teams = load_eligible_teams(conn, season)
+    if not teams:
+        return 0.0
+
+    picks_f = select_picks(teams, w_fixed, NUM_PICKS)
+    picks_v = select_picks_threshold(teams, w_var, threshold, min_picks, max_picks)
+
+    var_ids   = {p["team_id"] for p in picks_v}
+    fids      = {p["team_id"] for p in picks_f}
+    n_ol      = len(fids & var_ids)
+    ol_bet, solo_bet = overlap_bet_sizes(n_ol)
+    other_map = {p["team_id"]: fids - {p["team_id"]} for p in picks_f}
+
+    total_units = 0.0
+    for pick in picks_f:
+        tid = pick["team_id"]
+        bet = ol_bet if tid in var_ids else solo_bet
+        payout, _ = simulate_pick_payout(
+            conn, tid, season,
+            initial_bet=bet,
+            cash_out_round=cash_out_round,
+            other_pick_ids=other_map[tid],
+            bet_style=BET_STYLE_FLAT,
+        )
+        total_units += (payout - bet) / 100.0
+
+    return total_units
+
+
+def print_overlap_report(
+    conn: sqlite3.Connection,
+    w_fixed: np.ndarray,
+    w_var: np.ndarray,
+    threshold: float,
+    seasons: list[int] | None = None,
+    cash_out_round: int = DEFAULT_CASH_OUT_ROUND,
+    label: str | None = None,
+    min_picks: int = MIN_PICKS_PER_YEAR,
+    max_picks: int = MAX_PICKS_PER_YEAR,
+):
+    """
+    Side-by-side comparison of flat ($25 all 8) vs overlap-tiered (3:1, $200 total).
+
+    Overlap rule: picks flagged by both fixed-8 V2 and variable-N V2 get 3x the
+    stake of fixed-8-only picks. Total always $200/yr (budget-neutral).
+    """
+    if seasons is None:
+        seasons = ALL_SEASONS
+
+    co     = _co_label(cash_out_round)
+    header = label or f"OVERLAP-TIERED vs FLAT  (fixed-8 V2 x variable-N V2, {co} cash-out)"
+    budget = INITIAL_BET_DOLLARS * NUM_PICKS
+
+    print("\n" + "=" * 72)
+    print(header)
+    print(f"  Standard flat:   ${INITIAL_BET_DOLLARS:.2f}/pick x {NUM_PICKS} = ${budget:.2f}/yr")
+    print(f"  Overlap-tiered:  3:1 ratio (both models vs fixed-8 only), ${budget:.2f}/yr")
+    print(
+        f"  e.g. 4OL->${overlap_bet_sizes(4)[0]:.2f}/${overlap_bet_sizes(4)[1]:.2f}  "
+        f"3OL->${overlap_bet_sizes(3)[0]:.2f}/${overlap_bet_sizes(3)[1]:.2f}  "
+        f"2OL->${overlap_bet_sizes(2)[0]:.2f}/${overlap_bet_sizes(2)[1]:.2f}  "
+        f"1OL->${overlap_bet_sizes(1)[0]:.2f}/${overlap_bet_sizes(1)[1]:.2f}"
+    )
+    print("=" * 72)
+    print(f"  {'Season':<10} {'Flat':>10} {'Overlap':>10} {'Delta':>10}  #OL  Marker")
+    print(f"  {'-'*10} {'-'*10} {'-'*10} {'-'*10}  ---  ------")
+
+    flat_total    = 0.0
+    overlap_total = 0.0
+    seasons_with_data = 0
+
+    for season in sorted(seasons):
+        teams = load_eligible_teams(conn, season)
+        if not teams:
+            print(f"  {season:<10} {'no data':>10}")
+            continue
+
+        picks_f = select_picks(teams, w_fixed, NUM_PICKS)
+        picks_v = select_picks_threshold(teams, w_var, threshold, min_picks, max_picks)
+
+        var_ids   = {p["team_id"] for p in picks_v}
+        fids      = {p["team_id"] for p in picks_f}
+        n_ol      = len(fids & var_ids)
+        ol_bet, solo_bet = overlap_bet_sizes(n_ol)
+        other_map = {p["team_id"]: fids - {p["team_id"]} for p in picks_f}
+
+        flat_units    = 0.0
+        overlap_units = 0.0
+
+        for pick in picks_f:
+            tid = pick["team_id"]
+            o   = other_map[tid]
+
+            pf, _ = simulate_pick_payout(
+                conn, tid, season,
+                initial_bet=INITIAL_BET_DOLLARS,
+                cash_out_round=cash_out_round,
+                other_pick_ids=o,
+                bet_style=BET_STYLE_FLAT,
+            )
+            flat_units += (pf - INITIAL_BET_DOLLARS) / 100.0
+
+            bet = ol_bet if tid in var_ids else solo_bet
+            po, _ = simulate_pick_payout(
+                conn, tid, season,
+                initial_bet=bet,
+                cash_out_round=cash_out_round,
+                other_pick_ids=o,
+                bet_style=BET_STYLE_FLAT,
+            )
+            overlap_units += (po - bet) / 100.0
+
+        flat_total    += flat_units
+        overlap_total += overlap_units
+        seasons_with_data += 1
+        delta = overlap_units - flat_units
+
+        marker = ""
+        if season in VAL_SEASONS:    marker = "[VAL]"
+        elif season in TEST_SEASONS: marker = "[TEST]"
+
+        print(
+            f"  {season:<10} {flat_units:>+10.3f}u {overlap_units:>+10.3f}u "
+            f"{delta:>+10.3f}u  {n_ol:>3}  {marker}"
+        )
+
+    n = max(NUM_PICKS, 1)
+    flat_roi    = flat_total    / (seasons_with_data * n) if seasons_with_data else 0.0
+    overlap_roi = overlap_total / (seasons_with_data * n) if seasons_with_data else 0.0
+    delta_total = overlap_total - flat_total
+
+    print(f"  {'-'*10} {'-'*10} {'-'*10} {'-'*10}")
+    print(f"  {'TOTAL':<10} {flat_total:>+10.3f}u {overlap_total:>+10.3f}u {delta_total:>+10.3f}u")
+    print(f"  {'ROI/pick':<10} {flat_roi:>+10.4f}  {overlap_roi:>+10.4f}")
+    print("=" * 72)
