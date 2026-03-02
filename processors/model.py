@@ -359,8 +359,8 @@ def save_weights(conn: sqlite3.Connection, result: dict) -> int:
     w = result["weights"]
     co = _co_label(result.get("cash_out_round", DEFAULT_CASH_OUT_ROUND))
     bs = result.get("bet_style", DEFAULT_BET_STYLE)
-    # Pad to 11 features if older weights are passed
-    w_vals = [float(w[i]) if i < len(w) else 0.0 for i in range(11)]
+    # Pad to 12 features if older weights are passed
+    w_vals = [float(w[i]) if i < len(w) else 0.0 for i in range(12)]
 
     conn.execute(
         """
@@ -370,9 +370,10 @@ def save_weights(conn: sqlite3.Connection, result: dict) -> int:
             w_tov_ratio, w_ft_pct, w_oreb_pct, w_pace,
             w_conf_tourney_wins, w_conf_tourney_avg_margin,
             w_region_top4_net_avg,
+            w_opp_seed_rank_gap,
             train_units_won, val_units_won,
             notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             ",".join(str(s) for s in result["train_seasons"]),
@@ -381,6 +382,7 @@ def save_weights(conn: sqlite3.Connection, result: dict) -> int:
             w_vals[4], w_vals[5], w_vals[6], w_vals[7],
             w_vals[8], w_vals[9],
             w_vals[10],
+            w_vals[11],
             result["train_units"],
             result["val_units"],
             f"cash_out={co} bet_style={bs} test={result.get('test_units')}",
@@ -420,7 +422,8 @@ def load_latest_weights(
         SELECT w_seed_rank_gap, w_def_rank, w_opp_efg_pct, w_net_rating,
                w_tov_ratio, w_ft_pct, w_oreb_pct, w_pace,
                w_conf_tourney_wins, w_conf_tourney_avg_margin,
-               w_region_top4_net_avg
+               w_region_top4_net_avg,
+               w_opp_seed_rank_gap
         FROM mm_model_weights
         {where}
         ORDER BY trained_at DESC LIMIT 1
@@ -439,6 +442,7 @@ def load_latest_weights(
         row["w_conf_tourney_wins"]        or 0.0,
         row["w_conf_tourney_avg_margin"]  or 0.0,
         row["w_region_top4_net_avg"]      or 0.0,
+        row["w_opp_seed_rank_gap"]        or 0.0,
     ])
 
 
@@ -707,8 +711,8 @@ def save_weights_variable(conn: sqlite3.Connection, result: dict) -> int:
     co = _co_label(result.get("cash_out_round", DEFAULT_CASH_OUT_ROUND))
     bs = result.get("bet_style", DEFAULT_BET_STYLE)
     th = result.get("threshold", None)
-    # Pad to 11 features if older weights are passed
-    w_vals = [float(w[i]) if i < len(w) else 0.0 for i in range(11)]
+    # Pad to 12 features if older weights are passed
+    w_vals = [float(w[i]) if i < len(w) else 0.0 for i in range(12)]
 
     conn.execute(
         """
@@ -718,10 +722,11 @@ def save_weights_variable(conn: sqlite3.Connection, result: dict) -> int:
             w_tov_ratio, w_ft_pct, w_oreb_pct, w_pace,
             w_conf_tourney_wins, w_conf_tourney_avg_margin,
             w_region_top4_net_avg,
+            w_opp_seed_rank_gap,
             w_threshold,
             train_units_won, val_units_won,
             notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             ",".join(str(s) for s in result["train_seasons"]),
@@ -730,6 +735,7 @@ def save_weights_variable(conn: sqlite3.Connection, result: dict) -> int:
             w_vals[4], w_vals[5], w_vals[6], w_vals[7],
             w_vals[8], w_vals[9],
             w_vals[10],
+            w_vals[11],
             float(th) if th is not None else None,
             result["train_units"],
             result["val_units"],
@@ -772,6 +778,7 @@ def load_latest_weights_variable(
                w_tov_ratio, w_ft_pct, w_oreb_pct, w_pace,
                w_conf_tourney_wins, w_conf_tourney_avg_margin,
                w_region_top4_net_avg,
+               w_opp_seed_rank_gap,
                w_threshold
         FROM mm_model_weights
         {where}
@@ -790,6 +797,7 @@ def load_latest_weights_variable(
         row["w_conf_tourney_wins"]        or 0.0,
         row["w_conf_tourney_avg_margin"]  or 0.0,
         row["w_region_top4_net_avg"]      or 0.0,
+        row["w_opp_seed_rank_gap"]        or 0.0,
     ])
     threshold = row["w_threshold"]
     return weights, threshold

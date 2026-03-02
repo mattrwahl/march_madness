@@ -225,6 +225,36 @@ The code infrastructure (11th weight column in `mm_model_weights`, CTE in
 V2 weights load with `w_region_top4_net_avg = 0.0` (NULL fallback), so the feature
 is inert unless new weights are trained that assign it a non-zero value.
 
+### V4 Attempt — opp_seed_rank_gap (tried 2026-03-01, reverted)
+A single new feature was added; the fixed-8 model was retrained. It passed the training
+bar but failed the val gate, so variable-N was not trained and V4 weights were discarded.
+
+**Feature tested:** `opp_seed_rank_gap` — the R64 first-round opponent's `seed_rank_gap`
+(opponent's `net_rank - seed × 10`). Higher = opponent is weaker than their seed implies =
+easier path. Computed via SQL CTE (GROUP BY AVG per season/region/seed), which correctly
+collapses First Four pairs to a single average-quality estimate for the seed slot.
+
+**Decision gate:** variable-N V4 would only be trained if fixed-8 V4 val ≥ V2 val (+2.08u).
+
+**Results:**
+
+| Metric | V2 | V4 | Gate |
+|---|---|---|---|
+| Train | +29.33u | +31.15u | pass |
+| **Val** | **+2.08u** | **+1.55u** | **FAIL** |
+| Test | +3.29u | +2.29u | — |
+
+Train improved (the feature carries some real signal), but both val and test declined.
+Classic mild overfitting: with 12 parameters and 8 training seasons, the optimizer finds
+a small genuine edge but overfits enough to lose ground on unseen data.
+
+**Why the feature may be too noisy for generalization:**
+The 8v9 pair (where opponent quality matters most) is a near-coin-flip — the opponent's
+quality shifting the outcome probability by a few percent is easily washed out by variance.
+The 5v12 and 6v11 pairs where results are more predictable see very little discriminating
+variation in opponent quality from year to year. The feature adds just enough degrees of
+freedom for the optimizer to overfit.
+
 ### V2 — Current Model
 All V1 limitations addressed:
 
@@ -369,6 +399,13 @@ Flat               +32.62u    +0.51     +3.29u      +1.64
 ```
 
 ### Tried and Rejected Features
+
+**`opp_seed_rank_gap`** — R64 first-round opponent's seed_rank_gap (net_rank - seed×10).
+Train improved (+31.15u vs V2 +29.33u) but val declined (+1.55u vs V2 +2.08u). Mild
+overfitting: the 8v9 pair where opponent quality matters most is a near-coin-flip and the
+variance washes out the signal; the 5v12/6v11 pairs where results are predictable have
+little variation in opponent quality year to year. Feature code remains in place as the
+12th weight slot (0.0 fallback for V2 rows). See V4 in Model Iterations for full results.
 
 **`region_top4_net_avg`** — average NET rank of seeds 1–4 in the eligible team's region.
 Attempted as a "path difficulty" signal: a weak region means an easier route to E8/F4.

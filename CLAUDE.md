@@ -210,6 +210,24 @@ python main.py track [--season Y]    # update rolling payouts during tournament
   NET rank uses quadrant records as a direct input; incremental signal too small to justify
   an additional correlated feature on an 8-season training set
 
+## V4 Attempt — opp_seed_rank_gap (implemented 2026-03-01, REVERTED)
+- **Feature added**: `opp_seed_rank_gap` — the R64 first-round opponent's seed_rank_gap
+  (opponent's net_rank - opponent_seed × 10). Higher = weaker opponent than expected
+  = easier path for eligible team.
+  - Computed via CTE in load_eligible_teams() using GROUP BY AVG to collapse First Four
+    pairs to a single slot; no new DB column in mm_team_metrics
+  - mm_model_weights has w_opp_seed_rank_gap column (added via migration)
+  - Data quality notes: 2-6 NULLs per season (region=None teams); 2021/2025 have 0 NULLs
+- **Decision gate**: only train variable-N V4 if fixed-8 V4 val > V2 val (+2.08u)
+- **Fixed-8 V4 result** (id=15, then deleted):
+  - Train: +31.15u (vs V2 +29.33u — improved)
+  - Val: +1.55u (vs V2 +2.08u — FAILED the gate)
+  - Test: +2.29u (vs V2 +3.29u — worse)
+- **Conclusion**: V4 did not clear the val gate; variable-N not trained. V2 weights
+  (ids 11/12) remain active. Train improved but val/test declined — mild overfitting
+  on 8 seasons. The feature added something, but not enough to generalize beyond
+  the training window. Feature code remains in place (12th weight = 0.0 for V2 rows).
+
 ## Superset Connection
 Add to docker-compose.yml: `../march_madness/data:/app/mm_data:ro`
 SQLAlchemy URI: `sqlite:////app/mm_data/march_madness.db`

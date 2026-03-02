@@ -45,6 +45,11 @@ def init_db():
             conn.execute("ALTER TABLE mm_model_weights ADD COLUMN w_region_top4_net_avg REAL")
         except Exception:
             pass
+        # Migration: V4 R64 opponent quality feature
+        try:
+            conn.execute("ALTER TABLE mm_model_weights ADD COLUMN w_opp_seed_rank_gap REAL")
+        except Exception:
+            pass
     logger.info(f"Database initialized at {DB_PATH}")
 
 

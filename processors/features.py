@@ -29,8 +29,10 @@ FEATURES = [
     # V2: conference tournament momentum features
     ("conf_tourney_wins",      False),   # more conf tourney wins = hotter team
     ("conf_tourney_avg_margin", False),  # higher avg margin = dominant momentum
-    # V3: region path difficulty
+    # V3: region path difficulty (tried, reverted — region-level constant, no within-region discrimination)
     ("region_top4_net_avg",    False),   # higher = weaker region top seeds = easier path
+    # V4: R64 opponent quality
+    ("opp_seed_rank_gap",      False),   # opponent's (net_rank - seed*10): higher = weaker opp than expected = easier path
 ]
 
 FEATURE_NAMES = [f[0] for f in FEATURES]
@@ -75,6 +77,22 @@ def load_eligible_teams(conn: sqlite3.Connection, season: int) -> list[dict]:
               ON m2.team_id = te2.team_id AND m2.season = te2.season
             WHERE te2.seed <= 4
             GROUP BY te2.season, te2.region
+        ),
+        r64_opponents AS (
+            -- One row per (season, region, seed) via GROUP BY.
+            -- For most seed slots there is exactly one team, so AVG = that team's value.
+            -- For First Four seed slots (where two teams share the same region/seed),
+            -- AVG collapses them to a single pre-tournament quality estimate — the
+            -- correct treatment when the actual winner is unknown at selection time.
+            SELECT
+                te3.season,
+                te3.region,
+                te3.seed AS opp_seed,
+                AVG(m3.seed_rank_gap) AS opp_seed_rank_gap
+            FROM mm_tournament_entries te3
+            JOIN mm_team_metrics m3
+              ON m3.team_id = te3.team_id AND m3.season = te3.season
+            GROUP BY te3.season, te3.region, te3.seed
         )
         SELECT
             te.team_id,
@@ -96,11 +114,21 @@ def load_eligible_teams(conn: sqlite3.Connection, season: int) -> list[dict]:
             m.seed_rank_gap,
             m.conf_tourney_wins,
             m.conf_tourney_avg_margin,
-            rs.region_top4_net_avg
+            rs.region_top4_net_avg,
+            r64.opp_seed_rank_gap
         FROM mm_tournament_entries te
         JOIN mm_teams t ON t.id = te.team_id
         LEFT JOIN mm_team_metrics m ON m.team_id = te.team_id AND m.season = te.season
         LEFT JOIN region_strength rs ON rs.season = te.season AND rs.region = te.region
+        LEFT JOIN r64_opponents r64
+          ON r64.season = te.season
+         AND r64.region = te.region
+         AND r64.opp_seed = CASE te.seed
+               WHEN 5  THEN 12 WHEN 12 THEN 5
+               WHEN 6  THEN 11 WHEN 11 THEN 6
+               WHEN 7  THEN 10 WHEN 10 THEN 7
+               WHEN 8  THEN 9  WHEN 9  THEN 8
+               ELSE NULL END
         WHERE te.season = ?
           AND te.seed IN ({seed_placeholders})
           AND te.team_id NOT IN (
