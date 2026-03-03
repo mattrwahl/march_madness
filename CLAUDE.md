@@ -26,6 +26,7 @@ jobs/tournament_tracker.py       — Update rolling payouts during tournament
 main.py                          — CLI entry point
 feature_diagnostics.py           — 3-part feature analysis: corr matrix, target corr, SFM
 analyze_v6_fixed.py              — Standalone equal/geomean/borda fixed-weight comparison
+analyze_v6_threshold.py          — v6-geomean threshold sweep: ROI at every score cutoff
 queries/picks_analysis.sql       — Superset SQL: historical picks performance
 queries/tournament_results.sql   — Superset SQL: live tracking
 ```
@@ -253,8 +254,9 @@ python main.py picks [--season Y]    # generate 8 picks with overlap-tiered bet 
 python main.py track [--season Y]    # update rolling payouts during tournament
 
 # Analysis scripts
-python march_madness/feature_diagnostics.py  # correlation matrix, target corr, SFM
-python march_madness/analyze_v6_fixed.py     # equal / geomean / borda comparison
+python march_madness/feature_diagnostics.py    # correlation matrix, target corr, SFM
+python march_madness/analyze_v6_fixed.py       # equal / geomean / borda comparison
+python march_madness/analyze_v6_threshold.py   # v6-geomean score threshold sweep
 ```
 
 ## 2026 Workflow
@@ -296,6 +298,35 @@ python march_madness/analyze_v6_fixed.py     # equal / geomean / borda compariso
 - Both produced: Train=+32.16u, Val=-1.64u — same near-zero weights, identical picks.
 - **Conclusion**: 4 features × 8 seasons still underdetermined; optimizer finds
   near-degenerate solution at every lambda. Fixed geomean weights solve this cleanly.
+
+## Variable-N Threshold Investigation for v6-geomean (2026-03-03, NOT BENEFICIAL)
+Investigated whether thresholding the composite score (taking only top-N picks where
+score >= cutoff) could improve ROI per pick over the fixed-8 baseline.
+
+**Method**: weights fixed at V6_GEOMEAN_W; swept composite score threshold -2.0 to +1.5
+in 0.25 steps. Score is the weighted sum of per-feature z-scores — already meaningful
+without a second normalization pass.
+
+**Results**:
+
+| Threshold | Avg N/yr | Train ROI/pk | Val ROI/pk | Test ROI/pk | Total units |
+|-----------|----------|-------------|-----------|------------|-------------|
+| >= +0.50 | 4.4 | +0.231 | +0.217 | +0.558 | +12.3u |
+| >= +0.25 | 7.6 | +0.257 | +0.273 | +0.362 | +22.5u |
+| **Fixed-8** | **8.0** | **best** | **best** | **best** | **+29.2u** |
+| Expand to 12 | 12.0 | +0.175 | +0.342 | +0.358 | +29.4u |
+
+**Conclusion**: Fixed-8 flat is already optimal. Three reasons:
+1. All 8 composite scores are positive every season (range 0.13-1.49) — the model
+   has already gated on quality; there is no dead weight to cut.
+2. The biggest winners consistently rank **5-8 by model score**: Loyola Chicago 2018
+   (#8, +3.39u), San Diego State 2023 (#7, +2.91u), Oregon State 2021 (#4, +4.31u),
+   Auburn 2019 (#6, +2.95u), Duquesne 2024 (#8, +2.23u), Ole Miss 2025 (#8, +2.00u).
+   The score identifies direction (team is better than seeded), not magnitude of upside.
+3. Raising the threshold cuts these picks and loses -6.7u total vs fixed-8.
+   Expanding to 12 picks adds low-conviction losers and halves ROI/pick.
+
+**No variable-N or threshold variant will be implemented for v6-geomean.**
 
 ## Feature Diagnostics (feature_diagnostics.py)
 Three-part analysis run 2026-03-02:
