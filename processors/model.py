@@ -23,8 +23,12 @@ import numpy as np
 from scipy.optimize import minimize, differential_evolution
 
 from processors.features import (
-    FEATURE_NAMES, load_eligible_teams, compute_scores,
+    FEATURE_NAMES, FEATURE_NAMES_V5, V5_BOUNDS,
+    FEATURE_NAMES_V6A, FEATURE_NAMES_V6B, V6A_BOUNDS, V6B_BOUNDS, V6_GEOMEAN_W,
+    load_eligible_teams, compute_scores,
     select_picks, select_picks_threshold,
+    select_picks_v5, select_picks_threshold_v5,
+    select_picks_v6,
 )
 from config import (
     INITIAL_BET_DOLLARS, NUM_PICKS, ALL_SEASONS,
@@ -1228,4 +1232,786 @@ def print_overlap_report(
     print(f"  {'-'*10} {'-'*10} {'-'*10} {'-'*10}")
     print(f"  {'TOTAL':<10} {flat_total:>+10.3f}u {overlap_total:>+10.3f}u {delta_total:>+10.3f}u")
     print(f"  {'ROI/pick':<10} {flat_roi:>+10.4f}  {overlap_roi:>+10.4f}")
+    print("=" * 72)
+
+
+# ---------------------------------------------------------------------------
+# V5 model — composite features, constrained optimizer bounds
+# ---------------------------------------------------------------------------
+
+def simulate_season_v5(
+    conn: sqlite3.Connection,
+    season: int,
+    weights: np.ndarray,
+    cash_out_round: int = DEFAULT_CASH_OUT_ROUND,
+    bet_style: str = DEFAULT_BET_STYLE,
+) -> float:
+    """Simulate one season with V5 composite feature weights."""
+    teams = load_eligible_teams(conn, season)
+    if not teams:
+        logger.warning(f"No eligible teams found for season {season}")
+        return 0.0
+
+    picks = select_picks_v5(teams, weights, NUM_PICKS)
+    pick_ids = {p["team_id"] for p in picks}
+    other_ids_map = {p["team_id"]: pick_ids - {p["team_id"]} for p in picks}
+
+    total_units = 0.0
+    for pick in picks:
+        payout, _ = simulate_pick_payout(
+            conn, pick["team_id"], season,
+            cash_out_round=cash_out_round,
+            other_pick_ids=other_ids_map[pick["team_id"]],
+            bet_style=bet_style,
+        )
+        total_units += (payout - INITIAL_BET_DOLLARS) / 100.0
+
+    return total_units
+
+
+def objective_v5(
+    weights: np.ndarray,
+    conn: sqlite3.Connection,
+    seasons: list[int],
+    cash_out_round: int = DEFAULT_CASH_OUT_ROUND,
+    bet_style: str = DEFAULT_BET_STYLE,
+    lambda_l2: float = L2_LAMBDA,
+) -> float:
+    """Negative total units won + L2 regularization for V5 model."""
+    total = sum(
+        simulate_season_v5(conn, s, weights, cash_out_round, bet_style)
+        for s in seasons
+    )
+    l2 = lambda_l2 * float(np.sum(weights ** 2))
+    return -total + l2
+
+
+def train_weights_v5(
+    conn: sqlite3.Connection,
+    train_seasons: list[int],
+    val_seasons: list[int] | None = None,
+    test_seasons: list[int] | None = None,
+    method: str = "differential_evolution",
+    cash_out_round: int = DEFAULT_CASH_OUT_ROUND,
+    bet_style: str = DEFAULT_BET_STYLE,
+    lambda_l2: float = L2_LAMBDA,
+    seed: int = 42,
+) -> dict:
+    """
+    Optimize V5 feature weights with constrained bounds.
+    All weights constrained to expected sign: seed_rank_gap < 0, all others > 0.
+    Uses V5_BOUNDS (~500x smaller search space than unconstrained V2).
+    Returns dict with weights, train_units, val_units, test_units.
+    """
+    bounds = V5_BOUNDS
+    co = _co_label(cash_out_round)
+    n_features = len(FEATURE_NAMES_V5)
+    logger.info(
+        f"Training V5 ({bet_style}/{co}) on {len(train_seasons)} seasons "
+        f"[{min(train_seasons)}-{max(train_seasons)}] | "
+        f"{n_features} features, constrained bounds | lambda={lambda_l2} | method={method}"
+    )
+
+    _obj = lambda w: objective_v5(w, conn, train_seasons, cash_out_round, bet_style, lambda_l2)
+
+    if method == "differential_evolution":
+        result = differential_evolution(
+            _obj,
+            bounds=bounds,
+            seed=seed,
+            maxiter=500,
+            tol=1e-4,
+            workers=1,
+            popsize=15,
+        )
+        best_weights = result.x
+    else:
+        best_val = float("inf")
+        best_weights = np.zeros(n_features)
+        rng = np.random.default_rng(seed)
+        for _ in range(50):
+            w0 = np.array([rng.uniform(b[0], b[1]) for b in bounds])
+            res = minimize(
+                _obj, w0, method="Nelder-Mead",
+                options={"maxiter": 2000, "xatol": 1e-4, "fatol": 1e-4},
+            )
+            if res.fun < best_val:
+                best_val = res.fun
+                best_weights = res.x
+
+    def _eval(seasons_list):
+        if not seasons_list:
+            return None
+        return sum(
+            simulate_season_v5(conn, s, best_weights, cash_out_round, bet_style)
+            for s in seasons_list
+        )
+
+    train_units = _eval(train_seasons)
+    val_units   = _eval(val_seasons)
+    test_units  = _eval(test_seasons)
+
+    logger.info(
+        f"Done V5 ({bet_style}/{co}). "
+        f"Train: {train_units:+.2f}u  Val: {val_units:+.2f}u  Test: {test_units:+.2f}u"
+    )
+    return {
+        "weights":        best_weights,
+        "feature_names":  FEATURE_NAMES_V5,
+        "train_units":    train_units,
+        "val_units":      val_units,
+        "test_units":     test_units,
+        "train_seasons":  train_seasons,
+        "val_seasons":    val_seasons,
+        "test_seasons":   test_seasons,
+        "cash_out_round": cash_out_round,
+        "bet_style":      bet_style,
+        "lambda_l2":      lambda_l2,
+        "model_version":  "v5",
+    }
+
+
+def save_weights_v5(conn: sqlite3.Connection, result: dict) -> int:
+    """Save V5 trained weights to mm_model_weights. Returns row id."""
+    w  = result["weights"]
+    co = _co_label(result.get("cash_out_round", DEFAULT_CASH_OUT_ROUND))
+    bs = result.get("bet_style", DEFAULT_BET_STYLE)
+    # V5 features in order: seed_rank_gap, net_rating, conf_tourney_wins,
+    #                        cpi, dfi, ftli, spmi, tsi
+    conn.execute(
+        """
+        INSERT INTO mm_model_weights (
+            train_seasons, val_seasons,
+            w_seed_rank_gap, w_net_rating, w_conf_tourney_wins,
+            w_cpi, w_dfi, w_ftli, w_spmi, w_tsi,
+            train_units_won, val_units_won,
+            notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            ",".join(str(s) for s in result["train_seasons"]),
+            ",".join(str(s) for s in (result["val_seasons"] or [])),
+            float(w[0]),  # seed_rank_gap
+            float(w[1]),  # net_rating
+            float(w[2]),  # conf_tourney_wins
+            float(w[3]),  # cpi
+            float(w[4]),  # dfi
+            float(w[5]),  # ftli
+            float(w[6]),  # spmi
+            float(w[7]),  # tsi
+            result["train_units"],
+            result["val_units"],
+            f"model=v5 cash_out={co} bet_style={bs} lambda={result.get('lambda_l2', L2_LAMBDA):.4f} test={result.get('test_units')}",
+        ),
+    )
+    row = conn.execute(
+        "SELECT id FROM mm_model_weights ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    return row["id"]
+
+
+def load_latest_weights_v5(
+    conn: sqlite3.Connection,
+    cash_out_round: int | None = None,
+    bet_style: str | None = None,
+) -> np.ndarray | None:
+    """Load the most recently trained V5 fixed-8 weights."""
+    conditions = ["notes LIKE 'model=v5 %'"]
+    params = []
+
+    if cash_out_round is not None:
+        co = _co_label(cash_out_round)
+        conditions.append("notes LIKE ?")
+        params.append(f"%cash_out={co}%")
+
+    if bet_style is not None:
+        conditions.append("notes LIKE ?")
+        params.append(f"%bet_style={bet_style}%")
+
+    where = "WHERE " + " AND ".join(conditions)
+
+    row = conn.execute(
+        f"""
+        SELECT w_seed_rank_gap, w_net_rating, w_conf_tourney_wins,
+               w_cpi, w_dfi, w_ftli, w_spmi, w_tsi
+        FROM mm_model_weights
+        {where}
+        ORDER BY trained_at DESC LIMIT 1
+        """,
+        params,
+    ).fetchone()
+
+    if row is None:
+        return None
+
+    return np.array([
+        row["w_seed_rank_gap"]     or 0.0,
+        row["w_net_rating"]        or 0.0,
+        row["w_conf_tourney_wins"] or 0.0,
+        row["w_cpi"]               or 0.0,
+        row["w_dfi"]               or 0.0,
+        row["w_ftli"]              or 0.0,
+        row["w_spmi"]              or 0.0,
+        row["w_tsi"]               or 0.0,
+    ])
+
+
+def print_validation_report_v5(
+    conn: sqlite3.Connection,
+    weights: np.ndarray,
+    seasons: list[int] | None = None,
+    cash_out_round: int = DEFAULT_CASH_OUT_ROUND,
+    bet_style: str = DEFAULT_BET_STYLE,
+    label: str | None = None,
+):
+    """Print a formatted per-season V5 model report."""
+    if seasons is None:
+        seasons = ALL_SEASONS
+
+    co = _co_label(cash_out_round)
+    header = label or f"V5 MODEL REPORT ({bet_style.upper()} / {co} cash-out)"
+
+    # Print weight table
+    w_labels = FEATURE_NAMES_V5
+    print("\n" + "=" * 65)
+    print(header)
+    print("  Weights: " + "  ".join(f"{n}={w:.3f}" for n, w in zip(w_labels, weights)))
+    print("=" * 65)
+
+    total_units = 0.0
+    seasons_with_data = 0
+
+    for season in sorted(seasons):
+        teams = load_eligible_teams(conn, season)
+        if not teams:
+            print(f"  {season}: no data")
+            continue
+
+        picks = select_picks_v5(teams, weights, NUM_PICKS)
+        pick_ids = {p["team_id"] for p in picks}
+        other_ids_map = {p["team_id"]: pick_ids - {p["team_id"]} for p in picks}
+
+        season_units = 0.0
+        n_cashed = 0
+        pick_rows = []
+
+        for pick in picks:
+            payout, round_exit = simulate_pick_payout(
+                conn, pick["team_id"], season,
+                cash_out_round=cash_out_round,
+                other_pick_ids=other_ids_map[pick["team_id"]],
+                bet_style=bet_style,
+            )
+            units = (payout - INITIAL_BET_DOLLARS) / 100.0
+            season_units += units
+            if round_exit is not None and round_exit <= cash_out_round and payout > INITIAL_BET_DOLLARS:
+                n_cashed += 1
+            pick_rows.append((pick, units, round_exit))
+
+        total_units += season_units
+        seasons_with_data += 1
+
+        marker = ""
+        if season in VAL_SEASONS:
+            marker = " [VAL]"
+        elif season in TEST_SEASONS:
+            marker = " [TEST]"
+
+        print(f"  {season}{marker}: {season_units:+.3f} units  ({n_cashed}/{NUM_PICKS} cashed)")
+        for pick, units, round_exit in pick_rows:
+            exit_str = ROUND_LABELS.get(round_exit, f"R{round_exit}") if round_exit else "?"
+            print(f"    #{pick['pick_rank']} {pick['team_name']:30s} "
+                  f"seed={pick['seed']:2d}  {exit_str:<8}  {units:+.3f}u")
+
+    print("-" * 65)
+    print(f"  TOTAL: {total_units:+.3f} units  ({seasons_with_data} seasons)")
+    print("=" * 65)
+
+
+# ---------------------------------------------------------------------------
+# V6 model — hybrid 4-feature (coreA: opp_efg_pct / coreB: dfi) + tsi
+# ---------------------------------------------------------------------------
+
+_V6_FEATURE_NAMES = {"coreA": FEATURE_NAMES_V6A, "coreB": FEATURE_NAMES_V6B}
+_V6_BOUNDS        = {"coreA": V6A_BOUNDS,        "coreB": V6B_BOUNDS}
+
+
+def simulate_season_v6(
+    conn: sqlite3.Connection,
+    season: int,
+    weights: np.ndarray,
+    variant: str,
+    cash_out_round: int = DEFAULT_CASH_OUT_ROUND,
+    bet_style: str = DEFAULT_BET_STYLE,
+) -> float:
+    """Simulate one season with V6 hybrid weights."""
+    teams = load_eligible_teams(conn, season)
+    if not teams:
+        return 0.0
+
+    picks = select_picks_v6(teams, weights, variant, NUM_PICKS)
+    pick_ids = {p["team_id"] for p in picks}
+    other_ids_map = {p["team_id"]: pick_ids - {p["team_id"]} for p in picks}
+
+    total_units = 0.0
+    for pick in picks:
+        payout, _ = simulate_pick_payout(
+            conn, pick["team_id"], season,
+            cash_out_round=cash_out_round,
+            other_pick_ids=other_ids_map[pick["team_id"]],
+            bet_style=bet_style,
+        )
+        total_units += (payout - INITIAL_BET_DOLLARS) / 100.0
+
+    return total_units
+
+
+def objective_v6(
+    weights: np.ndarray,
+    conn: sqlite3.Connection,
+    seasons: list[int],
+    variant: str,
+    cash_out_round: int = DEFAULT_CASH_OUT_ROUND,
+    bet_style: str = DEFAULT_BET_STYLE,
+    lambda_l2: float = 0.1,
+) -> float:
+    """Negative total units won + L2 regularization for V6 model."""
+    total = sum(
+        simulate_season_v6(conn, s, weights, variant, cash_out_round, bet_style)
+        for s in seasons
+    )
+    l2 = lambda_l2 * float(np.sum(weights ** 2))
+    return -total + l2
+
+
+def train_weights_v6(
+    conn: sqlite3.Connection,
+    train_seasons: list[int],
+    variant: str,
+    val_seasons: list[int] | None = None,
+    test_seasons: list[int] | None = None,
+    method: str = "differential_evolution",
+    cash_out_round: int = DEFAULT_CASH_OUT_ROUND,
+    bet_style: str = DEFAULT_BET_STYLE,
+    lambda_l2: float = 0.1,
+    seed: int = 42,
+) -> dict:
+    """
+    Optimize V6 hybrid weights with constrained bounds.
+    variant: 'coreA' (opp_efg_pct+tsi) or 'coreB' (dfi+tsi).
+    Returns dict with weights, train_units, val_units, test_units.
+    """
+    feature_names = _V6_FEATURE_NAMES[variant]
+    bounds        = _V6_BOUNDS[variant]
+    n_features    = len(feature_names)
+    co = _co_label(cash_out_round)
+    logger.info(
+        f"Training V6-{variant} ({bet_style}/{co}) on {len(train_seasons)} seasons "
+        f"[{min(train_seasons)}-{max(train_seasons)}] | "
+        f"{n_features} features, constrained bounds | lambda={lambda_l2} | method={method}"
+    )
+
+    _obj = lambda w: objective_v6(w, conn, train_seasons, variant, cash_out_round, bet_style, lambda_l2)
+
+    if method == "differential_evolution":
+        result = differential_evolution(
+            _obj, bounds=bounds,
+            seed=seed, maxiter=500, tol=1e-4, workers=1, popsize=15,
+        )
+        best_weights = result.x
+    else:
+        best_val = float("inf")
+        best_weights = np.zeros(n_features)
+        rng = np.random.default_rng(seed)
+        for _ in range(50):
+            w0 = np.array([rng.uniform(b[0], b[1]) for b in bounds])
+            res = minimize(
+                _obj, w0, method="Nelder-Mead",
+                options={"maxiter": 2000, "xatol": 1e-4, "fatol": 1e-4},
+            )
+            if res.fun < best_val:
+                best_val = res.fun
+                best_weights = res.x
+
+    def _eval(seasons_list):
+        if not seasons_list:
+            return None
+        return sum(
+            simulate_season_v6(conn, s, best_weights, variant, cash_out_round, bet_style)
+            for s in seasons_list
+        )
+
+    train_units = _eval(train_seasons)
+    val_units   = _eval(val_seasons)
+    test_units  = _eval(test_seasons)
+
+    logger.info(
+        f"Done V6-{variant} ({bet_style}/{co}). "
+        f"Train: {train_units:+.2f}u  Val: {val_units:+.2f}u  Test: {test_units:+.2f}u"
+    )
+    return {
+        "weights":        best_weights,
+        "feature_names":  feature_names,
+        "variant":        variant,
+        "train_units":    train_units,
+        "val_units":      val_units,
+        "test_units":     test_units,
+        "train_seasons":  train_seasons,
+        "val_seasons":    val_seasons,
+        "test_seasons":   test_seasons,
+        "cash_out_round": cash_out_round,
+        "bet_style":      bet_style,
+        "lambda_l2":      lambda_l2,
+        "model_version":  f"v6-{variant}",
+    }
+
+
+def save_weights_v6(conn: sqlite3.Connection, result: dict) -> int:
+    """Save V6 trained weights to mm_model_weights. Returns row id."""
+    w       = result["weights"]
+    variant = result["variant"]
+    co      = _co_label(result.get("cash_out_round", DEFAULT_CASH_OUT_ROUND))
+    bs      = result.get("bet_style", DEFAULT_BET_STYLE)
+    lam     = result.get("lambda_l2", 0.1)
+
+    if variant == "coreA":
+        conn.execute(
+            """
+            INSERT INTO mm_model_weights (
+                train_seasons, val_seasons,
+                w_seed_rank_gap, w_conf_tourney_wins, w_opp_efg_pct, w_tsi,
+                train_units_won, val_units_won, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ",".join(str(s) for s in result["train_seasons"]),
+                ",".join(str(s) for s in (result["val_seasons"] or [])),
+                float(w[0]), float(w[1]), float(w[2]), float(w[3]),
+                result["train_units"], result["val_units"],
+                f"model=v6-coreA cash_out={co} bet_style={bs} lambda={lam:.4f} test={result.get('test_units')}",
+            ),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO mm_model_weights (
+                train_seasons, val_seasons,
+                w_seed_rank_gap, w_conf_tourney_wins, w_dfi, w_tsi,
+                train_units_won, val_units_won, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ",".join(str(s) for s in result["train_seasons"]),
+                ",".join(str(s) for s in (result["val_seasons"] or [])),
+                float(w[0]), float(w[1]), float(w[2]), float(w[3]),
+                result["train_units"], result["val_units"],
+                f"model=v6-coreB cash_out={co} bet_style={bs} lambda={lam:.4f} test={result.get('test_units')}",
+            ),
+        )
+
+    row = conn.execute(
+        "SELECT id FROM mm_model_weights ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    return row["id"]
+
+
+def load_latest_weights_v6(
+    conn: sqlite3.Connection,
+    variant: str,
+    cash_out_round: int | None = None,
+    bet_style: str | None = None,
+) -> np.ndarray | None:
+    """Load the most recently trained V6 weights for a given variant."""
+    conditions = [f"notes LIKE 'model=v6-{variant} %'"]
+    params = []
+
+    if cash_out_round is not None:
+        co = _co_label(cash_out_round)
+        conditions.append("notes LIKE ?")
+        params.append(f"%cash_out={co}%")
+
+    if bet_style is not None:
+        conditions.append("notes LIKE ?")
+        params.append(f"%bet_style={bet_style}%")
+
+    where = "WHERE " + " AND ".join(conditions)
+
+    if variant == "coreA":
+        row = conn.execute(
+            f"""
+            SELECT w_seed_rank_gap, w_conf_tourney_wins, w_opp_efg_pct, w_tsi
+            FROM mm_model_weights {where}
+            ORDER BY trained_at DESC LIMIT 1
+            """,
+            params,
+        ).fetchone()
+        if row is None:
+            return None
+        return np.array([
+            row["w_seed_rank_gap"]     or 0.0,
+            row["w_conf_tourney_wins"] or 0.0,
+            row["w_opp_efg_pct"]       or 0.0,
+            row["w_tsi"]               or 0.0,
+        ])
+    else:
+        row = conn.execute(
+            f"""
+            SELECT w_seed_rank_gap, w_conf_tourney_wins, w_dfi, w_tsi
+            FROM mm_model_weights {where}
+            ORDER BY trained_at DESC LIMIT 1
+            """,
+            params,
+        ).fetchone()
+        if row is None:
+            return None
+        return np.array([
+            row["w_seed_rank_gap"]     or 0.0,
+            row["w_conf_tourney_wins"] or 0.0,
+            row["w_dfi"]               or 0.0,
+            row["w_tsi"]               or 0.0,
+        ])
+
+
+def print_validation_report_v6(
+    conn: sqlite3.Connection,
+    weights: np.ndarray,
+    variant: str,
+    seasons: list[int] | None = None,
+    cash_out_round: int = DEFAULT_CASH_OUT_ROUND,
+    bet_style: str = DEFAULT_BET_STYLE,
+    label: str | None = None,
+):
+    """Print a formatted per-season V6 model report."""
+    if seasons is None:
+        seasons = ALL_SEASONS
+
+    feature_names = _V6_FEATURE_NAMES[variant]
+    co = _co_label(cash_out_round)
+    header = label or f"V6-{variant} MODEL REPORT ({bet_style.upper()} / {co} cash-out)"
+
+    print("\n" + "=" * 65)
+    print(header)
+    print("  Weights: " + "  ".join(f"{n}={w:.4f}" for n, w in zip(feature_names, weights)))
+    print("=" * 65)
+
+    total_units = 0.0
+    seasons_with_data = 0
+
+    for season in sorted(seasons):
+        teams = load_eligible_teams(conn, season)
+        if not teams:
+            print(f"  {season}: no data")
+            continue
+
+        picks = select_picks_v6(teams, weights, variant, NUM_PICKS)
+        pick_ids = {p["team_id"] for p in picks}
+        other_ids_map = {p["team_id"]: pick_ids - {p["team_id"]} for p in picks}
+
+        season_units = 0.0
+        n_cashed = 0
+        pick_rows = []
+
+        for pick in picks:
+            payout, round_exit = simulate_pick_payout(
+                conn, pick["team_id"], season,
+                cash_out_round=cash_out_round,
+                other_pick_ids=other_ids_map[pick["team_id"]],
+                bet_style=bet_style,
+            )
+            units = (payout - INITIAL_BET_DOLLARS) / 100.0
+            season_units += units
+            if round_exit is not None and round_exit <= cash_out_round and payout > INITIAL_BET_DOLLARS:
+                n_cashed += 1
+            pick_rows.append((pick, units, round_exit))
+
+        total_units += season_units
+        seasons_with_data += 1
+
+        marker = ""
+        if season in VAL_SEASONS:
+            marker = " [VAL]"
+        elif season in TEST_SEASONS:
+            marker = " [TEST]"
+
+        print(f"  {season}{marker}: {season_units:+.3f} units  ({n_cashed}/{NUM_PICKS} cashed)")
+        for pick, units, round_exit in pick_rows:
+            exit_str = ROUND_LABELS.get(round_exit, f"R{round_exit}") if round_exit else "?"
+            print(f"    #{pick['pick_rank']} {pick['team_name']:30s} "
+                  f"seed={pick['seed']:2d}  {exit_str:<8}  {units:+.3f}u")
+
+    print("-" * 65)
+    print(f"  TOTAL: {total_units:+.3f} units  ({seasons_with_data} seasons)")
+    print("=" * 65)
+
+
+# ---------------------------------------------------------------------------
+# V6-geomean fixed-weight model (no optimization)
+# ---------------------------------------------------------------------------
+
+def save_weights_v6_geomean(
+    conn: sqlite3.Connection,
+    train_units: float,
+    val_units: float | None,
+    test_units: float | None,
+    cash_out_round: int = DEFAULT_CASH_OUT_ROUND,
+    bet_style: str = DEFAULT_BET_STYLE,
+) -> int:
+    """Save fixed V6-geomean weights to mm_model_weights. Returns row id."""
+    w  = V6_GEOMEAN_W
+    co = _co_label(cash_out_round)
+    conn.execute(
+        """
+        INSERT INTO mm_model_weights (
+            train_seasons, val_seasons,
+            w_seed_rank_gap, w_conf_tourney_wins, w_dfi, w_tsi,
+            train_units_won, val_units_won, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            ",".join(str(s) for s in TRAIN_SEASONS),
+            ",".join(str(s) for s in VAL_SEASONS),
+            float(w[0]), float(w[1]), float(w[2]), float(w[3]),
+            train_units, val_units,
+            f"model=v6-geomean cash_out={co} bet_style={bet_style} test={test_units}",
+        ),
+    )
+    row = conn.execute(
+        "SELECT id FROM mm_model_weights ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    return row["id"]
+
+
+def load_latest_weights_v6_geomean(
+    conn: sqlite3.Connection,
+    cash_out_round: int | None = None,
+    bet_style: str | None = None,
+) -> np.ndarray | None:
+    """Load the most recently saved V6-geomean weights from mm_model_weights."""
+    conditions = ["notes LIKE 'model=v6-geomean %'"]
+    params = []
+
+    if cash_out_round is not None:
+        co = _co_label(cash_out_round)
+        conditions.append("notes LIKE ?")
+        params.append(f"%cash_out={co}%")
+
+    if bet_style is not None:
+        conditions.append("notes LIKE ?")
+        params.append(f"%bet_style={bet_style}%")
+
+    where = "WHERE " + " AND ".join(conditions)
+    row = conn.execute(
+        f"""
+        SELECT w_seed_rank_gap, w_conf_tourney_wins, w_dfi, w_tsi
+        FROM mm_model_weights {where}
+        ORDER BY trained_at DESC LIMIT 1
+        """,
+        params,
+    ).fetchone()
+
+    if row is None:
+        return None
+    return np.array([
+        row["w_seed_rank_gap"]     or 0.0,
+        row["w_conf_tourney_wins"] or 0.0,
+        row["w_dfi"]               or 0.0,
+        row["w_tsi"]               or 0.0,
+    ])
+
+
+def print_tiered_comparison_report_v6(
+    conn: sqlite3.Connection,
+    weights: np.ndarray,
+    variant: str,
+    seasons: list[int] | None = None,
+    cash_out_round: int = DEFAULT_CASH_OUT_ROUND,
+    label: str | None = None,
+):
+    """
+    Side-by-side comparison of flat ($25/pick) vs tiered conviction
+    ($37.50 top-4, $12.50 bottom-4) for a V6 model over seasons.
+    Both strategies share the same $200/yr total budget.
+    """
+    if seasons is None:
+        seasons = ALL_SEASONS
+
+    co = _co_label(cash_out_round)
+    header = label or f"V6-{variant} TIERED vs FLAT ({co} cash-out)"
+
+    print("\n" + "=" * 72)
+    print(header)
+    print(f"  Standard flat: ${INITIAL_BET_DOLLARS:.2f}/pick x {NUM_PICKS} = "
+          f"${INITIAL_BET_DOLLARS * NUM_PICKS:.2f}/yr")
+    print(f"  Tiered:        ${TIER1_BET:.2f} top-{NUM_PICKS//2} + "
+          f"${TIER2_BET:.2f} bottom-{NUM_PICKS//2} = "
+          f"${TIER1_BET*(NUM_PICKS//2) + TIER2_BET*(NUM_PICKS//2):.2f}/yr")
+    print("=" * 72)
+    print(f"  {'Season':<10} {'Flat':>10} {'Tiered':>10} {'Delta':>10}  Marker")
+    print(f"  {'-'*10} {'-'*10} {'-'*10} {'-'*10}  ------")
+
+    flat_total   = 0.0
+    tiered_total = 0.0
+    seasons_with_data = 0
+
+    for season in sorted(seasons):
+        teams = load_eligible_teams(conn, season)
+        if not teams:
+            print(f"  {season:<10} {'no data':>10}")
+            continue
+
+        picks = select_picks_v6(teams, weights, variant, NUM_PICKS)
+        if not picks:
+            print(f"  {season:<10} {'no picks':>10}")
+            continue
+
+        pick_ids = {p["team_id"] for p in picks}
+        other_ids_map = {p["team_id"]: pick_ids - {p["team_id"]} for p in picks}
+
+        n_tier1 = NUM_PICKS // 2
+        flat_units   = 0.0
+        tiered_units = 0.0
+
+        for i, pick in enumerate(picks):
+            payout_flat, _ = simulate_pick_payout(
+                conn, pick["team_id"], season,
+                initial_bet=INITIAL_BET_DOLLARS,
+                cash_out_round=cash_out_round,
+                other_pick_ids=other_ids_map[pick["team_id"]],
+                bet_style=BET_STYLE_FLAT,
+            )
+            flat_units += (payout_flat - INITIAL_BET_DOLLARS) / 100.0
+
+            tier_bet = TIER1_BET if i < n_tier1 else TIER2_BET
+            payout_tiered, _ = simulate_pick_payout(
+                conn, pick["team_id"], season,
+                initial_bet=tier_bet,
+                cash_out_round=cash_out_round,
+                other_pick_ids=other_ids_map[pick["team_id"]],
+                bet_style=BET_STYLE_FLAT,
+            )
+            tiered_units += (payout_tiered - tier_bet) / 100.0
+
+        flat_total   += flat_units
+        tiered_total += tiered_units
+        seasons_with_data += 1
+        delta = tiered_units - flat_units
+
+        marker = ""
+        if season in VAL_SEASONS:
+            marker = "[VAL]"
+        elif season in TEST_SEASONS:
+            marker = "[TEST]"
+
+        print(f"  {season:<10} {flat_units:>+10.3f}u {tiered_units:>+10.3f}u "
+              f"{delta:>+10.3f}u  {marker}")
+
+    n = max(NUM_PICKS, 1)
+    flat_roi   = flat_total   / (seasons_with_data * n) if seasons_with_data else 0.0
+    tiered_roi = tiered_total / (seasons_with_data * n) if seasons_with_data else 0.0
+    delta_total = tiered_total - flat_total
+
+    print(f"  {'-'*10} {'-'*10} {'-'*10} {'-'*10}")
+    print(f"  {'TOTAL':<10} {flat_total:>+10.3f}u {tiered_total:>+10.3f}u "
+          f"{delta_total:>+10.3f}u")
+    print(f"  {'ROI/pick':<10} {flat_roi:>+10.4f}  {tiered_roi:>+10.4f}")
     print("=" * 72)

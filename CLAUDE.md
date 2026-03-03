@@ -1,10 +1,9 @@
 # March Madness Betting Model — Claude Context
 
 ## Project Purpose
-Identify under-seeded NCAA Tournament teams (seeds 5-12) and bet using an
-overlap-tiered flat strategy: picks flagged by both fixed-8 V2 and variable-N V2
-receive a higher stake; fixed-8-only picks receive a lower stake. Total always
-$200/yr (3:1 ratio, budget-neutral). Profits locked in each round independently.
+Identify under-seeded NCAA Tournament teams (seeds 5-12) and bet using flat $25/pick
+strategy. Primary model is **v6-fixed-8-geomean** (4 features, geomean weights, no
+optimizer). Secondary legacy strategy: overlap-tiered V2 (fixed-8 + variable-N agreement).
 
 ## Stack
 - **Python 3.12** — all pipeline code
@@ -19,12 +18,14 @@ config.py                        — DB path, API key, season params, strategy c
 db/models.py                     — Full DDL for all mm_ tables
 db/db.py                         — Thin wrapper + migrations
 scrapers/cbbd_scraper.py         — CBBD API client (games, ratings, stats, lines, conf tourney)
-processors/features.py           — Feature engineering, R64 collision guard, select_picks, select_picks_threshold
+processors/features.py           — Feature engineering, R64 collision guard, all select_picks variants
 processors/model.py              — Weight optimization, payout simulation, tiered betting, reporting
 jobs/historical_backfill.py      — One-time load of historical data (6 steps incl. conf tourney)
 jobs/model_job.py                — Generate picks pre-tournament
 jobs/tournament_tracker.py       — Update rolling payouts during tournament
 main.py                          — CLI entry point
+feature_diagnostics.py           — 3-part feature analysis: corr matrix, target corr, SFM
+analyze_v6_fixed.py              — Standalone equal/geomean/borda fixed-weight comparison
 queries/picks_analysis.sql       — Superset SQL: historical picks performance
 queries/tournament_results.sql   — Superset SQL: live tracking
 ```
@@ -52,7 +53,12 @@ pools — they have not yet earned their bracket slot. This is enforced in `load
 
 ## Bet Styles
 
-### Overlap-Tiered (PRIMARY — use for 2026)
+### Flat (PRIMARY for v6-geomean)
+- Bet $25 each round independently per team. Total $200/yr.
+- Tiered conviction hurts v6-geomean: flat +29.22u vs tiered +24.05u (-5.17u).
+  The big winners (Loyola 2018, Oregon St 2021, Auburn 2019) land in the lower score ranks.
+
+### Overlap-Tiered (PRIMARY for V2 — legacy)
 - Pool = fixed-8 V2 picks (always 8 teams).
 - Picks also flagged by variable-N V2 ("both models"): **higher stake/round**.
 - Picks only in fixed-8 V2: **lower stake/round**.
@@ -62,20 +68,15 @@ pools — they have not yet earned their bracket slot. This is enforced in `load
   - 0 overlap → $25.00 / $25.00  (reduces to flat)
 - Winning a round locks in that round's profit; stake is NOT carried forward.
 - Two picks meeting each other: stop betting (no bet placed that round).
-- **Train+val (11 seasons)**: +43.19u, avg +3.93u/yr — best of all strategies.
+- **Train+val (11 seasons)**: +43.19u, avg +3.93u/yr — best of all V2 strategies.
 - **Train ROI/$100**: +2.23  **Val ROI/$100**: +0.90  **Test 2025 ROI/$100**: +1.98
 - Run with: `python main.py report --overlap`
-- Pick sheet (`python main.py picks`) shows `[BOTH]` marker and per-pick bet size.
 
-### Flat (reference — superseded by overlap-tiered)
-- Bet $25 each round independently per team. Total $200/yr.
-- **Train+val**: +29.33u  **2025 test**: +3.29u  ROI/$100: +1.48
-- Still useful as a baseline comparison.
-
-### Tiered Conviction (reference — superseded by overlap-tiered)
+### Tiered Conviction (reference — superseded)
 - Top 4 picks (by model score): $37.50/round. Bottom 4 picks: $12.50/round.
 - Same total budget ($200/yr). Assigns higher stake by score rank, not model agreement.
-- **Train+val**: +34.37u  **2025 test**: +3.14u  ROI/$100: +1.56
+- **V2 train+val**: +34.37u  **2025 test**: +3.14u  ROI/$100: +1.56
+- **V6-geomean**: flat dominates tiered by +5.17u — do NOT use tiered for v6.
 - Run with: `python main.py report --tiered`
 
 ### Rollover (comparison only — not recommended)
@@ -97,14 +98,53 @@ Team stops being bet on after winning a game in the target round:
 
 ## Models
 
-### Fixed-8 Flat/E8 V2 (pick selection — combined with variable-N for bet sizing)
+### v6-fixed-8-geomean (CURRENT PRIMARY — flat/E8)
+- **4 features**: seed_rank_gap, conf_tourney_wins, dfi, tsi (coreB set)
+- **Fixed pre-specified weights** derived from geomean(SFM_val, SFM_test) per feature;
+  no joint optimization — avoids weight collapse on 8-season training set.
+- Weights: srg=0.2795, ctw=0.3217, dfi=0.2025, tsi=0.1963
+- **Train (8 seasons)**: +18.18u  avg +2.27u/yr
+- **Val (2023+2024)**: +6.51u  (+4.664u / +1.850u)  — beats V2 gate (+2.08u) by +4.43u
+- **Test (2025)**: +4.53u  (Michigan S16 +1.26u, Ole Miss S16 +2.00u, Drake R32 +1.25u)
+- **Total (11 seasons)**: +29.22u flat  ROI/pick: +0.332
+- Weights saved in `mm_model_weights` with `notes LIKE 'model=v6-geomean %'` (id=20)
+- **Tiered hurts**: flat +29.22u vs tiered +24.05u — big winners rank 5-8 by model score
+- Run: `python main.py train --v6-geomean`
+
+### Geomean Weight Derivation
+Weights are geomean(SFM_val, SFM_test) from single-feature model (SFM) results,
+each feature run in isolation on 8 train seasons, evaluated on val+test:
+
+| Feature | SFM Val | SFM Test | Geomean | Weight |
+|---------|---------|---------|---------|--------|
+| seed_rank_gap | +6.52u | +5.83u | 6.165 | 0.2795 |
+| conf_tourney_wins | +9.55u | +5.27u | 7.094 | 0.3217 |
+| dfi | +6.95u | +2.87u | 4.466 | 0.2025 |
+| tsi | +5.21u | +3.60u | 4.331 | 0.1963 |
+
+Rationale: geomean penalizes features strong on one split but weak on another;
+balances both val and test signal without adding a new optimization pass on the same data.
+
+### Fixed-weight Comparison (equal / geomean / borda)
+Run on the same coreB feature set (srg, ctw, dfi, tsi), evaluated all 11 seasons:
+
+| Method | Val | Test | Total |
+|--------|-----|------|-------|
+| Equal (0.25 each) | +4.04u | +2.68u | — |
+| **Geomean** | **+6.51u** | **+4.53u** | **+29.22u** |
+| Borda count | +4.77u | +0.13u | — |
+
+Borda weakness: structurally over-democratic; a team ranked #1 on one feature and
+#8 on three others scores identically to a team ranked #4 on all four.
+
+### Fixed-8 Flat/E8 V2 (legacy — pick selection for overlap strategy)
 - Selects exactly 8 teams from seeds 5-12 each year by composite score
 - **R64 collision guard**: skips any candidate that would face an already-selected pick in R64
   (same region, complementary seed pair: 5v12, 6v11, 7v10, 8v9)
 - **L2 regularization**: lambda=0.01 added to training objective
 - **10 features** (8 original + 2 new conference tournament features)
 - **Train+val (10 seasons)**: +29.33u flat, avg +2.93u/yr, only 1 losing year (2017: -0.50u)
-- **Val (2023+2024)**: +2.04u (-0.65u / +2.68u)
+- **Val (2023+2024)**: +2.04u (-0.65u / +2.68u)  — val gate: +2.08u
 - **2025 test**: +3.29u (Ole Miss S16 +1.25u, Arkansas S16 +1.88u)
 - Weights stored in `mm_model_weights` with `notes LIKE 'cash_out=E8 bet_style=flat%'`
 
@@ -113,7 +153,7 @@ Team stops being bet on after winning a game in the target round:
 - Train+val: +12.70u | 2025 test: -0.65u
 - V2 is strictly better on all splits; do not retrain with old feature set
 
-### Variable-N Flat/E8 V2 (conviction signal — used for overlap bet sizing)
+### Variable-N Flat/E8 V2 (conviction signal — used for V2 overlap bet sizing)
 - Threshold-based selection: picks all teams with composite z-score >= threshold
   (self-normalized within each year's eligible field)
 - Optimizes N+1 params: 10 feature weights + z-score threshold
@@ -126,20 +166,45 @@ Team stops being bet on after winning a game in the target round:
 - Used by `picks` command to determine [BOTH] overlap picks (higher bet tier)
 - Weights stored in `mm_model_weights` with `notes LIKE '%model=variable%'`
 
-### Comparison Summary (train+val, 11 seasons incl. 2025 test)
+### Comparison Summary (all strategies, 11 seasons incl. 2025 test)
 ```
-Strategy                  Total Units   Budget/yr   ROI/$100    2025 test ROI/$100
-overlap-tiered V2         +43.19u       $200        +1.72       +1.98   <-- PRIMARY
-fixed tiered/E8 V2        +34.37u       $200        +1.56       +1.57
-fixed flat/E8 V2          +32.62u       $200        +1.48       +1.64
-variable flat/E8 V2       +21.89u       var         +0.55/pick  +1.58/4picks
-fixed flat/E8 V1          +12.70u       $200        --          -0.65   <-- archived
+Strategy                   Train+Val    Test      Budget/yr   ROI/pick
+overlap-tiered V2          +43.19u    +3.97u      $200        varies
+fixed flat/E8 v6-geomean   +24.69u    +4.53u      $200        +0.332   <-- NEW PRIMARY
+fixed tiered/E8 V2         +34.37u    +3.14u      $200        +0.196
+fixed flat/E8 V2           +32.62u    +3.29u      $200        +0.185
+variable flat/E8 V2        +21.89u    +1.58u      var         +0.547/pick
+fixed flat/E8 V1           +12.70u    -0.65u      $200        --  archived
 ```
+Note: v6-geomean train+val = +24.69u (10 seasons); total 11 seasons = +29.22u.
 
-## Selection Features (composite score) — V2: 10 features
+## Composite Feature Indices (V5/V6 only)
+
+Computed in `compute_composite_features()` in `features.py`:
+- **dfi** (Defensive Friction Index) = (opp_efg_pct + def_rank_norm) / 2
+  Lower raw = harder to score on. In V6 features list as `negate=True` so higher z = better.
+  Note: highly correlated with opp_efg_pct (r=+0.887) — partially redundant.
+- **tsi** (Tempo Stability Index) = tempo_std / mean_pace
+  Intended as consistency measure; actually functions as def_rank proxy (r=+0.660).
+- **cpi** (Possession Control Index) = (oreb_pct - tov_ratio) / 2
+  Dominated by oreb_pct (r=+0.596); tov_ratio partially cancels.
+- **ftli** (Free Throw Leverage Index) = ft_pct * opp_foul_rate
+  Modest predictive value; not included in V6 coreB.
+- **spmi** (Speed-Momentum Index) = pace * tsi
+  Near-zero predictive value (r=+0.015 with targets). Dropped from V6.
+
+## Selection Features (composite score)
+
+### V6-coreB (4 features — v6-fixed-8-geomean)
+1. `seed_rank_gap` — net_rank - (seed * 10); negative = under-seeded
+2. `conf_tourney_wins` — games won in conf tournament (momentum signal)
+3. `dfi` — Defensive Friction Index (negated: higher score = better defense)
+4. `tsi` — Tempo Stability Index (negated: lower variability = better)
+
+### V2: 10 features (fixed-8 and variable-N legacy models)
 1. `seed_rank_gap` = `net_rank - (seed * 10)` — negative = under-seeded
 2. `def_rank` — lower = elite defense (negated)
-3. `opp_efg_pct` — lower = better defense (negated)
+3. `opp_efg_pct` — lower opponent eFG = better defense (negated)
 4. `net_rating` — adjusted net efficiency
 5. `tov_ratio` — lower = fewer turnovers (negated)
 6. `ft_pct` — free throw % (clutch shooting)
@@ -152,26 +217,33 @@ fixed flat/E8 V1          +12.70u       $200        --          -0.65   <-- arch
 (`'tournament' in notes`, excluding NCAA and NIT). Populated in backfill Step 6.
 
 ## R64 Collision Guard
-`select_picks()` and `select_picks_threshold()` skip any candidate whose R64 opponent
-(same region, complementary seed) is already selected. Prevents wasted slots like 8v9
-collisions that produce $0 returns. Implemented via `_r64_collision()` in `features.py`.
+All `select_picks*` functions skip any candidate whose R64 opponent (same region,
+complementary seed) is already selected. Prevents wasted slots like 8v9 collisions
+that produce $0 returns. Implemented via `_r64_collision()` in `features.py`.
+Seed pairs: 5v12, 6v11, 7v10, 8v9.
 
 ## CLI Commands
 ```
 python main.py backfill              # load all missing seasons
 python main.py backfill --season Y   # load/reload one specific season
 
-# Fixed-8 model (pick selection)
+# v6-fixed-8-geomean (CURRENT PRIMARY)
+python main.py train --v6-geomean         # register model, show YoY + tiered comparison
+python main.py report --v6-geomean        # flat report on all 11 seasons
+python main.py report --v6-geomean --test # test holdout only (2025)
+python main.py report --v6-geomean --tiered  # tiered vs flat (flat is better)
+
+# V2 fixed-8 model (legacy — for overlap strategy)
 python main.py train                         # flat/E8 (defaults), 10 features + L2
 python main.py train --compare               # all 6 variants: flat+rollover x s16+e8+f4
 python main.py report                        # flat/E8 on train+val seasons
 python main.py report --test                 # holdout test (2025)
-python main.py report --overlap              # overlap-tiered vs flat (PRIMARY)
+python main.py report --overlap              # overlap-tiered vs flat (V2 PRIMARY)
 python main.py report --overlap --test       # overlap-tiered on 2025 holdout
 python main.py report --tiered               # tiered vs flat side-by-side (reference)
 python main.py report --tiered --test        # tiered vs flat on 2025 holdout (reference)
 
-# Variable-N model (conviction signal for overlap sizing)
+# V2 variable-N model (conviction signal for V2 overlap sizing)
 python main.py train --variable              # threshold-based, flat/E8, ROI objective
 python main.py report --variable             # variable-N report on train+val
 python main.py report --variable --test      # variable-N on 2025
@@ -179,54 +251,66 @@ python main.py report --variable --test      # variable-N on 2025
 # Tournament workflow
 python main.py picks [--season Y]    # generate 8 picks with overlap-tiered bet sizing
 python main.py track [--season Y]    # update rolling payouts during tournament
+
+# Analysis scripts
+python march_madness/feature_diagnostics.py  # correlation matrix, target corr, SFM
+python march_madness/analyze_v6_fixed.py     # equal / geomean / borda comparison
 ```
 
 ## 2026 Workflow
 1. Run `python main.py backfill --season 2026` after Selection Sunday data is available
-2. Run `python main.py picks` — outputs 8 picks with per-pick bet size already computed
-   - [BOTH] picks = flagged by both models → higher stake (overlap tier)
-   - Fixed-8 only picks → lower stake; total always $200/yr
-3. Run `python main.py report --overlap` to review historical overlap-tiered performance
+2. Run `python main.py report --v6-geomean` to see v6-geomean picks for 2026
+3. Bet $25/pick flat on all 8 picks (E8 cash-out)
 4. Run `python main.py track` after each round to update payouts
 
-## V3 Attempt — region_top4_net_avg (implemented 2026-03-01, REVERTED)
+## V3 Attempt — region_top4_net_avg (2026-03-01, REVERTED)
 - **Feature added**: `region_top4_net_avg` — average NET rank of seeds 1-4 in the team's region
-  - Code changes fully implemented in features.py, db/db.py, and processors/model.py
-  - Computed via CTE in load_eligible_teams(); no new DB column in mm_team_metrics
-  - mm_model_weights has w_region_top4_net_avg column (added via migration)
-- **Retrained**: fixed-8 V3 (id=13) and variable-N V3 (id=14) — then deleted after comparison
 - **Results vs V2 targets (FAILED all three):**
-  - Overlap train+val (10 seasons): V3 +38.04u vs V2 +39.22u (worse)
-  - Overlap test 2025: V3 +1.87u (ROI +0.233) vs V2 +3.97u (ROI +0.496) (much worse)
+  - Overlap train+val: V3 +38.04u vs V2 +39.22u (worse)
+  - Overlap test 2025: V3 +1.87u vs V2 +3.97u (much worse)
   - Variable-N val: V3 -0.064u/8 picks vs V2 +1.48u/8 picks (much worse)
-- **Conclusion**: V3 did not improve; V2 weights (ids 11/12) remain active.
-  The region feature hurt the variable-N model significantly; root cause likely that
-  region strength is a region-level constant (all 4 eligible seeds in a region share
-  the same value), providing no within-region discrimination — it adds noise to the
-  optimizer rather than signal. Feature code remains in place (load_eligible_teams
-  returns the column); it will simply be ignored if V2 weights are loaded (11th
-  weight = 0.0 fallback).
-- **Q1 wins: considered and rejected** — already partially captured by seed_rank_gap since
-  NET rank uses quadrant records as a direct input; incremental signal too small to justify
-  an additional correlated feature on an 8-season training set
+- **Conclusion**: Region strength is a region-level constant; no within-region discrimination.
+  V2 weights (ids 11/12) remain active. Feature code in place, weight=0.0 fallback.
 
-## V4 Attempt — opp_seed_rank_gap (implemented 2026-03-01, REVERTED)
-- **Feature added**: `opp_seed_rank_gap` — the R64 first-round opponent's seed_rank_gap
-  (opponent's net_rank - opponent_seed × 10). Higher = weaker opponent than expected
-  = easier path for eligible team.
-  - Computed via CTE in load_eligible_teams() using GROUP BY AVG to collapse First Four
-    pairs to a single slot; no new DB column in mm_team_metrics
-  - mm_model_weights has w_opp_seed_rank_gap column (added via migration)
-  - Data quality notes: 2-6 NULLs per season (region=None teams); 2021/2025 have 0 NULLs
-- **Decision gate**: only train variable-N V4 if fixed-8 V4 val > V2 val (+2.08u)
+## V4 Attempt — opp_seed_rank_gap (2026-03-01, REVERTED)
+- **Feature added**: `opp_seed_rank_gap` — R64 opponent's seed_rank_gap (higher = weaker opp)
 - **Fixed-8 V4 result** (id=15, then deleted):
   - Train: +31.15u (vs V2 +29.33u — improved)
   - Val: +1.55u (vs V2 +2.08u — FAILED the gate)
   - Test: +2.29u (vs V2 +3.29u — worse)
-- **Conclusion**: V4 did not clear the val gate; variable-N not trained. V2 weights
-  (ids 11/12) remain active. Train improved but val/test declined — mild overfitting
-  on 8 seasons. The feature added something, but not enough to generalize beyond
-  the training window. Feature code remains in place (12th weight = 0.0 for V2 rows).
+- **Conclusion**: Did not clear val gate. Feature code in place (12th weight = 0.0 for V2 rows).
+
+## V5 Attempt — 8-feature composite model (2026-03-02, FAILED)
+- **Features**: seed_rank_gap, net_rating, conf_tourney_wins, cpi, dfi, ftli, spmi, tsi
+- Constrained bounds: srg<0, all others>0. Optimized via differential evolution, lambda=0.01.
+- **V5 result** (id=16/17):
+  - Train: +32.16u (same as V6 — picks identical)
+  - Val: +0.45u (FAILED — well below V2 gate +2.08u)
+- **Conclusion**: Weight collapse — optimizer concentrated nearly all weight on srg.
+  8 training seasons underdetermined for 8-weight joint optimization even with L2.
+  SPMI had near-zero predictive value (r=+0.015); CPI dominated by oreb_pct.
+
+## V6 Optimizer Attempts — coreA/coreB (2026-03-02, FAILED)
+- **V6-coreA**: srg, ctw, opp_efg_pct, tsi — DE optimizer, lambda=0.1 (id=18)
+- **V6-coreB**: srg, ctw, dfi, tsi — DE optimizer, lambda=0.1 (id=19)
+- Both produced: Train=+32.16u, Val=-1.64u — same near-zero weights, identical picks.
+- **Conclusion**: 4 features × 8 seasons still underdetermined; optimizer finds
+  near-degenerate solution at every lambda. Fixed geomean weights solve this cleanly.
+
+## Feature Diagnostics (feature_diagnostics.py)
+Three-part analysis run 2026-03-02:
+
+**Key correlations (Pearson r with win probability proxy):**
+- dfi vs opp_efg_pct: r=+0.887 — nearly redundant (dfi is ~90% opp_efg_pct)
+- tsi vs def_rank: r=+0.660 — tsi functions as def_rank proxy, not tempo measure
+- cpi vs oreb_pct: r=+0.596 — cpi dominated by oreb_pct; tov_ratio partially cancels
+- spmi vs targets: r=+0.015 — effectively zero predictive value
+
+**Single-feature model (SFM) stability (higher test = more generalizable):**
+- seed_rank_gap: val=+6.52u, test=+5.83u — most stable (test/val ratio = 0.89)
+- conf_tourney_wins: val=+9.55u, test=+5.27u — highest combined, slight decay
+- dfi: val=+6.95u, test=+2.87u — moderate decay
+- tsi: val=+5.21u, test=+3.60u — good stability
 
 ## Superset Connection
 Add to docker-compose.yml: `../march_madness/data:/app/mm_data:ro`

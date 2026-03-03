@@ -107,6 +107,155 @@ def cmd_train(args):
 
     _co_label = {CASH_OUT_ROUND_S16: "S16", CASH_OUT_ROUND_E8: "E8", CASH_OUT_ROUND_F4: "F4"}
 
+    # ---- V6-geomean fixed-weight model (no optimization) --------------------
+    if getattr(args, 'v6_geomean', False):
+        from processors.model import (
+            simulate_season_v6, save_weights_v6_geomean,
+            print_validation_report_v6, print_tiered_comparison_report_v6,
+        )
+        from processors.features import V6_GEOMEAN_W, FEATURE_NAMES_V6B
+        co = _co_label.get(args.cash_out, f"R{args.cash_out}")
+        print(f"\n{'='*65}")
+        print(f"REGISTERING v6-fixed-8-geomean -- FLAT / {co} cash-out")
+        print(f"Features: seed_rank_gap, conf_tourney_wins, dfi, tsi")
+        print(f"Weights (geomean of SFM val+test, no optimization):")
+        for name, w in zip(FEATURE_NAMES_V6B, V6_GEOMEAN_W):
+            print(f"  {name:<25s} {w:+.4f}")
+        print(f"{'='*65}")
+
+        all_seasons = TRAIN_SEASONS + VAL_SEASONS + TEST_SEASONS
+        with get_db(DB_PATH) as conn:
+            train_units = sum(
+                simulate_season_v6(conn, s, V6_GEOMEAN_W, "coreB",
+                                   cash_out_round=args.cash_out, bet_style=args.bet_style)
+                for s in TRAIN_SEASONS
+            )
+            val_units = sum(
+                simulate_season_v6(conn, s, V6_GEOMEAN_W, "coreB",
+                                   cash_out_round=args.cash_out, bet_style=args.bet_style)
+                for s in VAL_SEASONS
+            )
+            test_units = sum(
+                simulate_season_v6(conn, s, V6_GEOMEAN_W, "coreB",
+                                   cash_out_round=args.cash_out, bet_style=args.bet_style)
+                for s in TEST_SEASONS
+            )
+            wid = save_weights_v6_geomean(
+                conn, train_units, val_units, test_units,
+                cash_out_round=args.cash_out, bet_style=args.bet_style,
+            )
+            print(f"Weights saved (id={wid})  "
+                  f"train={train_units:+.2f}u  val={val_units:+.2f}u  test={test_units:+.2f}u")
+
+            print_validation_report_v6(
+                conn, V6_GEOMEAN_W, "coreB",
+                seasons=all_seasons,
+                cash_out_round=args.cash_out,
+                bet_style=args.bet_style,
+                label="v6-fixed-8-geomean YEAR-OVER-YEAR (all 11 seasons)",
+            )
+            print_tiered_comparison_report_v6(
+                conn, V6_GEOMEAN_W, "coreB",
+                seasons=all_seasons,
+                cash_out_round=args.cash_out,
+                label="v6-fixed-8-geomean TIERED vs FLAT (all 11 seasons)",
+            )
+        return
+
+    # ---- V6 hybrid models (coreA / coreB) -----------------------------------
+    if args.v6a or args.v6b:
+        from processors.model import (
+            train_weights_v6, save_weights_v6, print_validation_report_v6,
+        )
+        variant = "coreA" if args.v6a else "coreB"
+        lambda_l2 = args.l2_lambda if args.l2_lambda is not None else 0.1
+        features_desc = (
+            "seed_rank_gap, conf_tourney_wins, opp_efg_pct, tsi" if args.v6a
+            else "seed_rank_gap, conf_tourney_wins, dfi, tsi"
+        )
+        co = _co_label.get(args.cash_out, f"R{args.cash_out}")
+        print(f"\n{'='*65}")
+        print(f"TRAINING V6-{variant} FIXED-8 -- {args.bet_style.upper()} / {co} cash-out")
+        print(f"Train: {min(TRAIN_SEASONS)}-{max(TRAIN_SEASONS)} ({len(TRAIN_SEASONS)} seasons)"
+              f"   Val: {VAL_SEASONS}")
+        print(f"Features: {features_desc}")
+        print(f"Bounds:   constrained (seed_rank_gap<0, all others>0)  lambda={lambda_l2}")
+        print(f"{'='*65}")
+
+        with get_db(DB_PATH) as conn:
+            result = train_weights_v6(
+                conn, TRAIN_SEASONS,
+                variant=variant,
+                val_seasons=VAL_SEASONS,
+                test_seasons=TEST_SEASONS,
+                method=args.method,
+                cash_out_round=args.cash_out,
+                bet_style=args.bet_style,
+                lambda_l2=lambda_l2,
+            )
+            wid = save_weights_v6(conn, result)
+
+            val_str  = f"{result['val_units']:+.2f}u"  if result["val_units"]  is not None else "n/a"
+            test_str = f"{result['test_units']:+.2f}u" if result["test_units"] is not None else "n/a"
+            print(f"Weights saved (id={wid})  "
+                  f"train={result['train_units']:+.2f}u  val={val_str}  test={test_str}")
+
+            for name, w in zip(result["feature_names"], result["weights"]):
+                print(f"  {name:<25s} {w:+.4f}")
+
+            print_validation_report_v6(
+                conn, result["weights"], variant,
+                seasons=TRAIN_SEASONS + VAL_SEASONS,
+                cash_out_round=args.cash_out,
+                bet_style=args.bet_style,
+            )
+        return
+
+    # ---- V5 fixed-8 model ---------------------------------------------------
+    if args.v5:
+        from processors.model import (
+            train_weights_v5, save_weights_v5, print_validation_report_v5,
+        )
+        from config import L2_LAMBDA
+        lambda_l2 = args.l2_lambda if args.l2_lambda is not None else L2_LAMBDA
+        co = _co_label.get(args.cash_out, f"R{args.cash_out}")
+        print(f"\n{'='*65}")
+        print(f"TRAINING V5 FIXED-8 — {args.bet_style.upper()} / {co} cash-out")
+        print(f"Train: {min(TRAIN_SEASONS)}-{max(TRAIN_SEASONS)} ({len(TRAIN_SEASONS)} seasons)"
+              f"   Val: {VAL_SEASONS}")
+        print(f"Features: seed_rank_gap, net_rating, conf_tourney_wins, cpi, dfi, ftli, spmi, tsi")
+        print(f"Bounds:   constrained (seed_rank_gap<0, all others>0)  lambda={lambda_l2}")
+        print(f"{'='*65}")
+
+        with get_db(DB_PATH) as conn:
+            result = train_weights_v5(
+                conn, TRAIN_SEASONS,
+                val_seasons=VAL_SEASONS,
+                test_seasons=TEST_SEASONS,
+                method=args.method,
+                cash_out_round=args.cash_out,
+                bet_style=args.bet_style,
+                lambda_l2=lambda_l2,
+            )
+            wid = save_weights_v5(conn, result)
+
+            val_str  = f"{result['val_units']:+.2f}u"  if result["val_units"]  is not None else "n/a"
+            test_str = f"{result['test_units']:+.2f}u" if result["test_units"] is not None else "n/a"
+            print(f"Weights saved (id={wid})  "
+                  f"train={result['train_units']:+.2f}u  val={val_str}  test={test_str}")
+
+            from processors.features import FEATURE_NAMES_V5
+            for name, w in zip(FEATURE_NAMES_V5, result["weights"]):
+                print(f"  {name:<25s} {w:+.4f}")
+
+            print_validation_report_v5(
+                conn, result["weights"],
+                seasons=TRAIN_SEASONS + VAL_SEASONS,
+                cash_out_round=args.cash_out,
+                bet_style=args.bet_style,
+            )
+        return
+
     # ---- Variable-N model ---------------------------------------------------
     if args.variable:
         from processors.model import (
@@ -253,6 +402,81 @@ def cmd_report(args):
             )
         return
 
+    # ---- V6-geomean fixed-weight model --------------------------------------
+    if getattr(args, 'v6_geomean', False):
+        from processors.model import (
+            load_latest_weights_v6_geomean, print_validation_report_v6,
+            print_tiered_comparison_report_v6,
+        )
+        with get_db(DB_PATH) as conn:
+            weights = load_latest_weights_v6_geomean(
+                conn, cash_out_round=args.cash_out, bet_style=args.bet_style,
+            )
+            if weights is None:
+                print("No v6-geomean weights found. Run: python main.py train --v6-geomean")
+                sys.exit(1)
+            seasons = TEST_SEASONS if args.test else TRAIN_SEASONS + VAL_SEASONS + TEST_SEASONS
+            lbl = f"v6-fixed-8-geomean HOLDOUT TEST ({TEST_SEASONS})" if args.test else None
+            print_validation_report_v6(
+                conn, weights, "coreB",
+                seasons=seasons,
+                cash_out_round=args.cash_out,
+                bet_style=args.bet_style,
+                label=lbl,
+            )
+            if args.tiered:
+                print_tiered_comparison_report_v6(
+                    conn, weights, "coreB",
+                    seasons=seasons,
+                    cash_out_round=args.cash_out,
+                )
+        return
+
+    # ---- V6 hybrid models ---------------------------------------------------
+    if args.v6a or args.v6b:
+        from processors.model import load_latest_weights_v6, print_validation_report_v6
+        variant = "coreA" if args.v6a else "coreB"
+        flag = "--v6a" if args.v6a else "--v6b"
+        with get_db(DB_PATH) as conn:
+            weights = load_latest_weights_v6(
+                conn, variant, cash_out_round=args.cash_out, bet_style=args.bet_style,
+            )
+            if weights is None:
+                print(f"No V6-{variant} weights found. Run: python main.py train {flag}")
+                sys.exit(1)
+            seasons = TEST_SEASONS if args.test else TRAIN_SEASONS + VAL_SEASONS
+            lbl = f"V6-{variant} HOLDOUT TEST ({TEST_SEASONS})" if args.test else None
+            print_validation_report_v6(
+                conn, weights, variant,
+                seasons=seasons,
+                cash_out_round=args.cash_out,
+                bet_style=args.bet_style,
+                label=lbl,
+            )
+        return
+
+    # ---- V5 fixed-8 model ---------------------------------------------------
+    if args.v5:
+        from processors.model import load_latest_weights_v5, print_validation_report_v5
+        with get_db(DB_PATH) as conn:
+            weights = load_latest_weights_v5(
+                conn, cash_out_round=args.cash_out, bet_style=args.bet_style,
+            )
+            if weights is None:
+                print(f"No V5 weights found for bet_style={args.bet_style}, "
+                      f"cash_out={args.cash_out}. Run: python main.py train --v5")
+                sys.exit(1)
+            seasons = TEST_SEASONS if args.test else TRAIN_SEASONS + VAL_SEASONS
+            lbl = f"V5 HOLDOUT TEST ({TEST_SEASONS})" if args.test else None
+            print_validation_report_v5(
+                conn, weights,
+                seasons=seasons,
+                cash_out_round=args.cash_out,
+                bet_style=args.bet_style,
+                label=lbl,
+            )
+        return
+
     # ---- Fixed-8 model ------------------------------------------------------
     from processors.model import (
         load_latest_weights, print_validation_report, print_tiered_comparison_report,
@@ -362,6 +586,17 @@ def main():
                          help="Train all 6 fixed-8 variants (flat+rollover x s16+e8+f4) and compare")
     p_train.add_argument("--variable", action="store_true",
                          help="Use variable-N threshold model (ROI objective, z-score selection)")
+    p_train.add_argument("--v5", action="store_true",
+                         help="Train V5 composite model (cpi, dfi, ftli, spmi, tsi) with constrained bounds")
+    p_train.add_argument("--v6a", action="store_true",
+                         help="Train V6-coreA hybrid: seed_rank_gap, conf_tourney_wins, opp_efg_pct, tsi")
+    p_train.add_argument("--v6b", action="store_true",
+                         help="Train V6-coreB hybrid: seed_rank_gap, conf_tourney_wins, dfi, tsi")
+    p_train.add_argument("--v6-geomean", action="store_true", dest="v6_geomean",
+                         help="Register v6-fixed-8-geomean model (fixed geomean weights, no optimization)")
+    p_train.add_argument("--l2-lambda", type=float, default=None, dest="l2_lambda",
+                         metavar="LAMBDA",
+                         help="L2 regularization lambda override (V5 default: 0.01; V6 default: 0.1)")
     p_train.set_defaults(func=cmd_train)
 
     # report
@@ -378,6 +613,14 @@ def main():
                           help="Show tiered conviction vs standard flat comparison")
     p_report.add_argument("--overlap", action="store_true",
                           help="Show overlap-tiered vs flat (PRIMARY strategy)")
+    p_report.add_argument("--v5", action="store_true",
+                          help="Show V5 composite model report")
+    p_report.add_argument("--v6a", action="store_true",
+                          help="Show V6-coreA hybrid model report")
+    p_report.add_argument("--v6b", action="store_true",
+                          help="Show V6-coreB hybrid model report")
+    p_report.add_argument("--v6-geomean", action="store_true", dest="v6_geomean",
+                          help="Show v6-fixed-8-geomean model report")
     p_report.set_defaults(func=cmd_report)
 
     args = parser.parse_args()

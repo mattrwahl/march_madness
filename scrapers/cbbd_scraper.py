@@ -148,8 +148,16 @@ def get_adjusted_efficiency_ratings(season: int) -> list[dict]:
 
 def get_team_season_stats(season: int, season_type: str = "regular") -> list[dict]:
     """
-    Fetch team season stats (four factors + pace + FT%) for pre-tournament metrics.
+    Fetch team season stats (four factors + pace + FT% + V5 sub-components).
     season_type='regular' avoids postseason contamination.
+
+    V5 additions extracted from the same API call:
+      opp_tov_pct   -- opponent turnover rate (CPI)
+      dreb_pct      -- defensive rebound % = 1 - opp_oreb_pct (CPI)
+      opp_3p_pct    -- opponent 3PT FG% allowed (DFI)
+      opp_foul_rate -- opponent fouls per possession (FTLI)
+      team_3p_rate  -- team 3PT attempt rate = 3PA/FGA (SPMI)
+      opp_3p_rate   -- opponent 3PT attempt rate allowed = opp_3PA/opp_FGA (SPMI)
     """
     with _get_api_client() as api_client:
         stats_api = cbbd.StatsApi(api_client)
@@ -160,10 +168,10 @@ def get_team_season_stats(season: int, season_type: str = "regular") -> list[dic
         try:
             # Navigate nested stats object
             team_stats = getattr(s, "team_stats", s)
-            opp_stats = getattr(s, "opponent_stats", None)
-            four_factors = getattr(team_stats, "four_factors", None)
+            opp_stats  = getattr(s, "opponent_stats", None)
+            four_factors     = getattr(team_stats, "four_factors", None)
             opp_four_factors = getattr(opp_stats, "four_factors", None) if opp_stats else None
-            free_throws = getattr(team_stats, "free_throws", None)
+            free_throws      = getattr(team_stats, "free_throws", None)
 
             # Handle both camelCase and snake_case field names
             def _ff(obj, *keys):
@@ -175,25 +183,148 @@ def get_team_season_stats(season: int, season_type: str = "regular") -> list[dic
                         return v
                 return None
 
+            def _safe_div(a, b):
+                return float(a) / float(b) if a is not None and b is not None and float(b) != 0 else None
+
+            # --- V5: additional fields from team_stats and opp_stats ---
+            # Three-point field goals (nested objects)
+            team_3pfg = _ff(team_stats, "threePointFieldGoals", "three_point_field_goals")
+            opp_3pfg  = _ff(opp_stats,  "threePointFieldGoals", "three_point_field_goals")
+            team_fg   = _ff(team_stats, "fieldGoals", "field_goals")
+            opp_fg    = _ff(opp_stats,  "fieldGoals", "field_goals")
+
+            team_3pa  = _ff(team_3pfg, "attempted") if team_3pfg else None
+            team_fga  = _ff(team_fg,   "attempted") if team_fg   else None
+            opp_3pa   = _ff(opp_3pfg,  "attempted") if opp_3pfg  else None
+            opp_fga   = _ff(opp_fg,    "attempted") if opp_fg    else None
+
+            # opp fouls and possessions for foul rate
+            opp_fouls      = _ff(opp_stats, "fouls", "fouls") if opp_stats else None
+            opp_fouls_tot  = _ff(opp_fouls, "total") if opp_fouls else None
+            opp_poss       = _ff(opp_stats, "possessions") if opp_stats else None
+
+            # dreb_pct = 100 - opp offensive rebound pct
+            # offensiveReboundPct is stored in percentage form (e.g. 29.7, not 0.297)
+            # so dreb_pct is also in percentage form (e.g. 70.3) to match oreb_pct scale.
+            opp_oreb = _ff(opp_four_factors, "offensiveReboundPct", "offensive_rebound_pct")
+            dreb_pct = (100.0 - float(opp_oreb)) if opp_oreb is not None else None
+
             results.append({
-                "team": s.team,
+                "team":       s.team,
                 "conference": getattr(s, "conference", None),
-                "pace": getattr(s, "pace", None),
-                "efg_pct": _ff(four_factors,
-                               "effective_field_goal_pct", "effectiveFieldGoalPct", "efg_pct"),
+                "pace":       getattr(s, "pace", None),
+                # Existing V2 fields
+                "efg_pct":    _ff(four_factors,
+                                  "effective_field_goal_pct", "effectiveFieldGoalPct", "efg_pct"),
                 "opp_efg_pct": _ff(opp_four_factors,
                                    "effective_field_goal_pct", "effectiveFieldGoalPct", "efg_pct"),
-                "tov_ratio": _ff(four_factors, "turnover_ratio", "turnoverRatio", "tov_ratio"),
-                "oreb_pct": _ff(four_factors,
-                                "offensive_rebound_pct", "offensiveReboundPct", "oreb_pct"),
-                "ft_rate": _ff(four_factors, "free_throw_rate", "freeThrowRate", "ft_rate"),
-                "ft_pct": _ff(free_throws, "pct", "free_throw_pct", "ft_pct"),
+                "tov_ratio":  _ff(four_factors, "turnover_ratio", "turnoverRatio", "tov_ratio"),
+                "oreb_pct":   _ff(four_factors,
+                                  "offensive_rebound_pct", "offensiveReboundPct", "oreb_pct"),
+                "ft_rate":    _ff(four_factors, "free_throw_rate", "freeThrowRate", "ft_rate"),
+                "ft_pct":     _ff(free_throws, "pct", "free_throw_pct", "ft_pct"),
+                # V5 additions
+                "opp_tov_pct":  _ff(opp_four_factors,
+                                    "turnover_ratio", "turnoverRatio", "tov_ratio"),
+                "dreb_pct":     dreb_pct,
+                "opp_3p_pct":   _ff(opp_3pfg, "pct") if opp_3pfg else None,
+                "opp_foul_rate": _safe_div(opp_fouls_tot, opp_poss),
+                "team_3p_rate": _safe_div(team_3pa, team_fga),
+                "opp_3p_rate":  _safe_div(opp_3pa, opp_fga),
             })
         except Exception as e:
             logger.warning(f"Error parsing stats for {getattr(s, 'team', '?')}: {e}")
 
     logger.info(f"Fetched season stats for {len(results)} teams ({season} {season_type})")
     return results
+
+
+def get_team_shooting_stats(season: int, team_names: list[str]) -> dict[str, dict]:
+    """
+    Fetch shooting stats for a list of teams and extract rim attempt rate.
+
+    Uses StatsApi.get_team_season_shooting_stats(season, team=X) which requires
+    team or conference — no all-season bulk fetch is available from this endpoint.
+    Makes one API call per team; pass only the ~68 tournament teams per season.
+
+    Returns dict: {team_name: {"team_rim_rate": float}}
+      team_rim_rate = layups% + dunks% + tipIns% of all FGA (at-rim shots),
+      expressed as a proportion (0.0–1.0 approx).
+    """
+    result = {}
+    with _get_api_client() as api_client:
+        stats_api = cbbd.StatsApi(api_client)
+        for team_name in team_names:
+            try:
+                records = stats_api.get_team_season_shooting_stats(
+                    season=season, team=team_name, season_type="regular"
+                )
+                for r in records:
+                    ab = (
+                        getattr(r, "attemptsBreakdown", None)
+                        or getattr(r, "attempts_breakdown", None)
+                    )
+                    if ab is None:
+                        continue
+                    layups  = float(getattr(ab, "layups",  None) or 0.0)
+                    dunks   = float(getattr(ab, "dunks",   None) or 0.0)
+                    tip_ins = float(
+                        getattr(ab, "tipIns",   None)
+                        or getattr(ab, "tip_ins", None)
+                        or 0.0
+                    )
+                    # attemptsBreakdown fields are in percentage form (e.g. 35.4 = 35.4%).
+                    # Divide by 100 to get decimal proportion matching team_3p_rate scale.
+                    result[r.team] = {"team_rim_rate": (layups + dunks + tip_ins) / 100.0}
+            except Exception as e:
+                logger.warning(f"Error fetching shooting stats for {team_name} ({season}): {e}")
+
+    logger.info(f"Fetched shooting stats for {len(result)}/{len(team_names)} teams ({season})")
+    return result
+
+
+def get_team_game_pace_stats(season: int, team_names: list[str]) -> dict[str, float | None]:
+    """
+    Compute Tempo Stability Index (TSI) for a list of teams.
+
+    TSI = std(game_pace) / mean(game_pace)  [coefficient of variation]
+    Lower = more consistent tempo control.
+
+    Fetches regular-season game box scores per team (one API call per team).
+    Pass only the ~68 tournament teams; min 5 games required to compute TSI.
+
+    Returns dict: {team_name: tsi_value or None}
+    """
+    result: dict[str, float | None] = {}
+    with _get_api_client() as api_client:
+        games_api = cbbd.GamesApi(api_client)
+        for team_name in team_names:
+            try:
+                records = games_api.get_game_teams(
+                    season=season, team=team_name, season_type="regular"
+                )
+                paces = []
+                for r in records:
+                    pace = getattr(r, "pace", None)
+                    if pace is not None:
+                        paces.append(float(pace))
+                if len(paces) < 5:
+                    result[team_name] = None
+                    continue
+                n = len(paces)
+                mean_p = sum(paces) / n
+                variance = sum((p - mean_p) ** 2 for p in paces) / n
+                std_p = variance ** 0.5
+                result[team_name] = std_p / mean_p if mean_p > 0 else None
+            except Exception as e:
+                logger.warning(f"Error fetching game pace for {team_name} ({season}): {e}")
+                result[team_name] = None
+
+    logger.info(
+        f"Computed TSI for {sum(1 for v in result.values() if v is not None)}"
+        f"/{len(team_names)} teams ({season})"
+    )
+    return result
 
 
 def get_conf_tournament_stats_by_team(season: int) -> dict[str, dict]:

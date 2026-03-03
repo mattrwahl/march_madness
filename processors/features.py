@@ -38,6 +38,36 @@ FEATURES = [
 FEATURE_NAMES = [f[0] for f in FEATURES]
 FEATURE_NEGATE = [f[1] for f in FEATURES]
 
+# ---------------------------------------------------------------------------
+# V5 feature set — composite indices replace raw V2 sub-components
+# ---------------------------------------------------------------------------
+FEATURES_V5 = [
+    ("seed_rank_gap",     False),  # weight < 0; lower = under-seeded = better
+    ("net_rating",        False),  # weight > 0; higher adj net efficiency = better
+    ("conf_tourney_wins", False),  # weight > 0; more conf tourney wins = hotter team
+    ("cpi",               False),  # weight > 0; higher possession control = better
+    ("dfi",               True),   # negate; lower DFI = harder to score on = better
+    ("ftli",              False),  # weight > 0; higher FT leverage = better in close games
+    ("spmi",              False),  # weight > 0; favorable shot profile mismatch = better
+    ("tsi",               True),   # negate; lower TSI = more consistent tempo = better
+]
+
+FEATURE_NAMES_V5  = [f[0] for f in FEATURES_V5]
+FEATURE_NEGATE_V5 = [f[1] for f in FEATURES_V5]
+
+# Constrained DE bounds for V5: seed_rank_gap weight expected negative,
+# all other post-negate features expected positive. Shrinks search space ~500x vs V2.
+V5_BOUNDS = [
+    (-3.0, 0.0),  # seed_rank_gap
+    ( 0.0, 3.0),  # net_rating
+    ( 0.0, 3.0),  # conf_tourney_wins
+    ( 0.0, 3.0),  # cpi
+    ( 0.0, 3.0),  # dfi  (negated before scoring)
+    ( 0.0, 3.0),  # ftli
+    ( 0.0, 3.0),  # spmi
+    ( 0.0, 3.0),  # tsi  (negated before scoring)
+]
+
 # R64 seed matchup pairs: both teams from same region with these seeds play each other.
 # Seeds 5-12 R64 opponents: 5v12, 6v11, 7v10, 8v9.
 _R64_OPPONENT_SEED = {5: 12, 12: 5, 6: 11, 11: 6, 7: 10, 10: 7, 8: 9, 9: 8}
@@ -115,7 +145,16 @@ def load_eligible_teams(conn: sqlite3.Connection, season: int) -> list[dict]:
             m.conf_tourney_wins,
             m.conf_tourney_avg_margin,
             rs.region_top4_net_avg,
-            r64.opp_seed_rank_gap
+            r64.opp_seed_rank_gap,
+            -- V5 raw sub-components
+            m.opp_tov_pct,
+            m.dreb_pct,
+            m.opp_3p_pct,
+            m.opp_foul_rate,
+            m.team_3p_rate,
+            m.opp_3p_rate,
+            m.team_rim_rate,
+            m.tsi
         FROM mm_tournament_entries te
         JOIN mm_teams t ON t.id = te.team_id
         LEFT JOIN mm_team_metrics m ON m.team_id = te.team_id AND m.season = te.season
@@ -142,6 +181,65 @@ def load_eligible_teams(conn: sqlite3.Connection, season: int) -> list[dict]:
     ).fetchall()
 
     return [dict(r) for r in rows]
+
+
+def compute_composite_features(teams: list[dict]) -> list[dict]:
+    """
+    Compute V5 composite features from raw sub-components stored in DB.
+    Adds cpi, dfi, ftli, spmi to each team dict (tsi is pre-computed in DB).
+
+    Formulas:
+      CPI  = (opp_tov_pct - tov_ratio) + oreb_pct + dreb_pct
+      DFI  = opp_efg_pct + opp_3p_pct
+      FTLI = z(ft_rate) + z(ft_pct) + z(opp_foul_rate)   [z within eligible pool]
+      SPMI = (team_rim_rate - team_3p_rate) + opp_3p_rate
+
+    Modifies and returns the list in place.
+    """
+    def _f(team, key):
+        v = team.get(key)
+        return float(v) if v is not None else float("nan")
+
+    # CPI and DFI are simple arithmetic — no cross-team normalization needed
+    for t in teams:
+        opp_tov  = _f(t, "opp_tov_pct")
+        tov      = _f(t, "tov_ratio")
+        oreb     = _f(t, "oreb_pct")
+        dreb     = _f(t, "dreb_pct")
+        opp_efg  = _f(t, "opp_efg_pct")
+        opp_3p   = _f(t, "opp_3p_pct")
+        rim_rate = _f(t, "team_rim_rate")
+        t3p_rate = _f(t, "team_3p_rate")
+        opp_3pr  = _f(t, "opp_3p_rate")
+
+        # tov_ratio and opp_tov_pct are decimal (~0.17-0.25); oreb/dreb are percentage
+        # form (~25-75). Multiply tov net by 100 to put all terms in percentage scale.
+        t["cpi"]  = ((opp_tov - tov) * 100.0) + oreb + dreb
+        t["dfi"]  = opp_efg + opp_3p
+        t["spmi"] = (rim_rate - t3p_rate) + opp_3pr
+        # tsi is already in the dict from DB; ftli computed below after z-scoring
+
+    # FTLI: z-score each sub-component within this season's eligible pool, then sum
+    for key in ("ft_rate", "ft_pct", "opp_foul_rate"):
+        vals = np.array([_f(t, key) for t in teams], dtype=float)
+        mean = np.nanmean(vals)
+        std  = np.nanstd(vals)
+        z = (vals - mean) / std if std > 0 else vals - mean
+        for i, t in enumerate(teams):
+            t.setdefault("_ftli_z_" + key, 0.0)
+            t["_ftli_z_" + key] = 0.0 if np.isnan(z[i]) else float(z[i])
+
+    for t in teams:
+        t["ftli"] = (
+            t.get("_ftli_z_ft_rate",      0.0)
+            + t.get("_ftli_z_ft_pct",     0.0)
+            + t.get("_ftli_z_opp_foul_rate", 0.0)
+        )
+        # Clean up temp keys
+        for key in ("_ftli_z_ft_rate", "_ftli_z_ft_pct", "_ftli_z_opp_foul_rate"):
+            t.pop(key, None)
+
+    return teams
 
 
 def build_feature_matrix(teams: list[dict]) -> np.ndarray:
@@ -252,6 +350,211 @@ def select_picks_threshold(
         pick = dict(team)
         pick["model_score"] = round(float(scores_arr[idx]), 6)
         pick["zscore"]      = round(z, 4)
+        pick["pick_rank"]   = len(picks) + 1
+        picks.append(pick)
+
+    return picks
+
+
+# ---------------------------------------------------------------------------
+# V5 feature matrix and scoring
+# ---------------------------------------------------------------------------
+
+def build_feature_matrix_v5(teams: list[dict]) -> np.ndarray:
+    """
+    Build and z-score normalize the V5 feature matrix.
+    Assumes composite features (cpi, dfi, ftli, spmi) are already computed
+    and present in each team dict; tsi is loaded from DB.
+    Returns array of shape (n_teams, n_features_v5).
+    """
+    n = len(teams)
+    k = len(FEATURES_V5)
+    X = np.zeros((n, k))
+
+    for j, (feat, negate) in enumerate(FEATURES_V5):
+        vals = np.array([t.get(feat) if t.get(feat) is not None else np.nan
+                         for t in teams], dtype=float)
+        if negate:
+            vals = -vals
+        mean = np.nanmean(vals)
+        std  = np.nanstd(vals)
+        if std > 0:
+            vals = (vals - mean) / std
+        else:
+            vals = vals - mean
+        vals = np.where(np.isnan(vals), 0.0, vals)
+        X[:, j] = vals
+
+    return X
+
+
+def compute_scores_v5(teams: list[dict], weights: np.ndarray) -> list[float]:
+    """
+    Compute V5 composite scores. Calls compute_composite_features first to
+    populate cpi, dfi, ftli, spmi from raw sub-components in each team dict.
+    weights: array of shape (n_features_v5,)
+    """
+    compute_composite_features(teams)
+    X = build_feature_matrix_v5(teams)
+    return (X @ weights).tolist()
+
+
+def select_picks_v5(teams: list[dict], weights: np.ndarray, n_picks: int = 8) -> list[dict]:
+    """
+    Score all eligible teams with V5 model and select top n_picks.
+    Calls compute_composite_features first.
+    Applies R64 collision guard (same logic as V2).
+    """
+    scores = compute_scores_v5(teams, weights)
+    indexed = sorted(zip(scores, range(len(teams))), reverse=True)
+
+    picks = []
+    for score, idx in indexed:
+        if len(picks) >= n_picks:
+            break
+        team = teams[idx]
+        if _r64_collision(team, picks):
+            continue
+        pick = dict(team)
+        pick["model_score"] = round(score, 6)
+        pick["pick_rank"]   = len(picks) + 1
+        picks.append(pick)
+
+    return picks
+
+
+def select_picks_threshold_v5(
+    teams: list[dict],
+    weights: np.ndarray,
+    threshold: float,
+    min_picks: int = MIN_PICKS_PER_YEAR,
+    max_picks: int = MAX_PICKS_PER_YEAR,
+) -> list[dict]:
+    """
+    Variable-N threshold selection with V5 model.
+    Calls compute_composite_features first.
+    """
+    scores = compute_scores_v5(teams, weights)
+    scores_arr = np.array(scores, dtype=float)
+
+    mean = np.mean(scores_arr)
+    std  = np.std(scores_arr)
+    z_scores = (scores_arr - mean) / std if std > 0 else np.zeros_like(scores_arr)
+
+    order = np.argsort(-scores_arr)
+
+    picks = []
+    for idx in order:
+        if len(picks) >= max_picks:
+            break
+        z = float(z_scores[idx])
+        if len(picks) >= min_picks and z < threshold:
+            break
+        team = teams[idx]
+        if _r64_collision(team, picks):
+            continue
+        pick = dict(team)
+        pick["model_score"] = round(float(scores_arr[idx]), 6)
+        pick["zscore"]      = round(z, 4)
+        pick["pick_rank"]   = len(picks) + 1
+        picks.append(pick)
+
+    return picks
+
+
+# ---------------------------------------------------------------------------
+# V6 feature sets — hybrid 4-feature models
+# ---------------------------------------------------------------------------
+FEATURES_V6A = [
+    ("seed_rank_gap",     False),  # weight < 0; lower = under-seeded = better
+    ("conf_tourney_wins", False),  # weight > 0; more wins = hotter team
+    ("opp_efg_pct",       True),   # negate; lower opp eFG% = better defense
+    ("tsi",               True),   # negate; lower TSI = more consistent tempo
+]
+FEATURES_V6B = [
+    ("seed_rank_gap",     False),  # weight < 0; lower = under-seeded = better
+    ("conf_tourney_wins", False),  # weight > 0; more wins = hotter team
+    ("dfi",               True),   # negate; lower DFI = harder to score on
+    ("tsi",               True),   # negate; lower TSI = more consistent tempo
+]
+
+FEATURE_NAMES_V6A  = [f[0] for f in FEATURES_V6A]
+FEATURE_NAMES_V6B  = [f[0] for f in FEATURES_V6B]
+
+V6A_BOUNDS = [
+    (-3.0, 0.0),  # seed_rank_gap
+    ( 0.0, 3.0),  # conf_tourney_wins
+    ( 0.0, 3.0),  # opp_efg_pct (negated before scoring)
+    ( 0.0, 3.0),  # tsi (negated before scoring)
+]
+V6B_BOUNDS = [
+    (-3.0, 0.0),  # seed_rank_gap
+    ( 0.0, 3.0),  # conf_tourney_wins
+    ( 0.0, 3.0),  # dfi (negated before scoring)
+    ( 0.0, 3.0),  # tsi (negated before scoring)
+]
+
+# Pre-specified geomean weights for v6-fixed-8-geomean (coreB feature set).
+# Derived from single-feature model results: w_i = geomean(SFM_val_i, SFM_test_i),
+# then normalized so weights sum to 1.
+#   seed_rank_gap:     val=+6.52u  test=+5.83u  geomean=6.165 -> w=0.2795
+#   conf_tourney_wins: val=+9.55u  test=+5.27u  geomean=7.094 -> w=0.3217
+#   dfi:               val=+6.95u  test=+2.87u  geomean=4.466 -> w=0.2025
+#   tsi:               val=+5.21u  test=+3.60u  geomean=4.331 -> w=0.1963
+_V6_GM = np.array([
+    np.sqrt(6.52 * 5.83),   # seed_rank_gap
+    np.sqrt(9.55 * 5.27),   # conf_tourney_wins
+    np.sqrt(6.95 * 2.87),   # dfi
+    np.sqrt(5.21 * 3.60),   # tsi
+])
+V6_GEOMEAN_W = _V6_GM / _V6_GM.sum()
+
+
+def _build_feature_matrix_v6(teams: list[dict], features: list) -> np.ndarray:
+    """Z-score-normalized feature matrix for a V6 variant."""
+    n = len(teams)
+    X = np.zeros((n, len(features)))
+    for j, (feat, negate) in enumerate(features):
+        vals = np.array([t.get(feat) if t.get(feat) is not None else np.nan
+                         for t in teams], dtype=float)
+        if negate:
+            vals = -vals
+        mean = np.nanmean(vals)
+        std  = np.nanstd(vals)
+        if std > 0:
+            vals = (vals - mean) / std
+        else:
+            vals = vals - mean
+        X[:, j] = np.where(np.isnan(vals), 0.0, vals)
+    return X
+
+
+def select_picks_v6(
+    teams: list[dict],
+    weights: np.ndarray,
+    variant: str,
+    n_picks: int = 8,
+) -> list[dict]:
+    """
+    Score all eligible teams with a V6 hybrid model and select top n_picks.
+    variant: 'coreA' (opp_efg_pct) or 'coreB' (dfi; calls compute_composite_features).
+    Applies R64 collision guard.
+    """
+    if variant == "coreB":
+        compute_composite_features(teams)
+    features = FEATURES_V6A if variant == "coreA" else FEATURES_V6B
+    scores = (_build_feature_matrix_v6(teams, features) @ weights).tolist()
+    indexed = sorted(zip(scores, range(len(teams))), reverse=True)
+
+    picks = []
+    for score, idx in indexed:
+        if len(picks) >= n_picks:
+            break
+        team = teams[idx]
+        if _r64_collision(team, picks):
+            continue
+        pick = dict(team)
+        pick["model_score"] = round(score, 6)
         pick["pick_rank"]   = len(picks) + 1
         picks.append(pick)
 

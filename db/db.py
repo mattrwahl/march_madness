@@ -50,6 +50,35 @@ def init_db():
             conn.execute("ALTER TABLE mm_model_weights ADD COLUMN w_opp_seed_rank_gap REAL")
         except Exception:
             pass
+        # Migration: V5 feature sub-components in mm_team_metrics
+        _v5_metric_cols = [
+            "opp_tov_pct REAL",
+            "dreb_pct REAL",
+            "opp_3p_pct REAL",
+            "opp_foul_rate REAL",
+            "team_3p_rate REAL",
+            "opp_3p_rate REAL",
+            "team_rim_rate REAL",
+            "tsi REAL",
+        ]
+        for col_def in _v5_metric_cols:
+            try:
+                conn.execute(f"ALTER TABLE mm_team_metrics ADD COLUMN {col_def}")
+            except Exception:
+                pass
+        # Migration: V5 composite weight columns in mm_model_weights
+        _v5_weight_cols = [
+            "w_cpi REAL",
+            "w_dfi REAL",
+            "w_ftli REAL",
+            "w_spmi REAL",
+            "w_tsi REAL",
+        ]
+        for col_def in _v5_weight_cols:
+            try:
+                conn.execute(f"ALTER TABLE mm_model_weights ADD COLUMN {col_def}")
+            except Exception:
+                pass
     logger.info(f"Database initialized at {DB_PATH}")
 
 

@@ -70,6 +70,19 @@ CREATE TABLE IF NOT EXISTS mm_team_metrics (
     -- Conference tournament performance (V2 — momentum signal pre-NCAA tournament)
     conf_tourney_wins       INTEGER,    -- games won in conference tournament
     conf_tourney_avg_margin REAL,       -- avg point differential across all conf tourney games
+    -- V5 feature sub-components (CPI)
+    opp_tov_pct     REAL,   -- opponent turnover rate (CPI: opponent ball protection)
+    dreb_pct        REAL,   -- defensive rebound % = 1 - opp_oreb_pct (CPI: deny second chances)
+    -- V5 feature sub-components (DFI)
+    opp_3p_pct      REAL,   -- opponent 3PT FG% allowed (DFI: 3P defense quality)
+    -- V5 feature sub-components (FTLI)
+    opp_foul_rate   REAL,   -- opponent fouls per possession (FTLI: opponent foul tendency)
+    -- V5 feature sub-components (SPMI)
+    team_3p_rate    REAL,   -- team 3PT attempt rate = 3PA/FGA (SPMI: shot profile)
+    opp_3p_rate     REAL,   -- opponent 3PT attempt rate allowed = opp_3PA/opp_FGA (SPMI)
+    team_rim_rate   REAL,   -- team rim attempt rate (SPMI: from shooting stats endpoint)
+    -- V5 feature sub-components (TSI)
+    tsi             REAL,   -- tempo stability index = std(game_pace)/mean(game_pace)
     UNIQUE(season, team_id)
 );
 """
@@ -125,6 +138,12 @@ CREATE TABLE IF NOT EXISTS mm_model_weights (
     w_conf_tourney_avg_margin   REAL,
     -- Variable-N threshold (NULL for fixed-8 models)
     w_threshold     REAL,
+    -- V5 composite feature weights
+    w_cpi           REAL,   -- Chaos Pressure Index
+    w_dfi           REAL,   -- Defensive Floor Index
+    w_ftli          REAL,   -- Foul and Free Throw Leverage Index
+    w_spmi          REAL,   -- Shot Profile Mismatch Index
+    w_tsi           REAL,   -- Tempo Stability Index
     -- Performance metrics
     train_units_won REAL,
     val_units_won   REAL,

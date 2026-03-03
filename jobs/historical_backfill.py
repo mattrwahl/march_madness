@@ -16,6 +16,8 @@ from scrapers.cbbd_scraper import (
     get_team_season_stats,
     get_betting_lines,
     get_conf_tournament_stats_by_team,
+    get_team_shooting_stats,
+    get_team_game_pace_stats,
 )
 from config import HISTORICAL_SEASONS, DB_PATH
 
@@ -64,7 +66,8 @@ def load_season(conn, season: int) -> dict:
     Returns summary dict with counts.
     """
     logger.info(f"Loading season {season}...")
-    counts = {"games": 0, "teams": 0, "metrics": 0, "lines": 0, "conf_tourney": 0}
+    counts = {"games": 0, "teams": 0, "metrics": 0, "lines": 0,
+              "conf_tourney": 0, "shooting": 0, "tsi": 0}
 
     # --- Step 1: Tournament games ---
     games = get_tournament_games(season, tournament="NCAA")
@@ -188,8 +191,11 @@ def load_season(conn, season: int) -> dict:
                      adj_off_rating, adj_def_rating, net_rating, net_rank, def_rank,
                      efg_pct, opp_efg_pct, tov_ratio, oreb_pct, ft_rate,
                      ft_pct, pace, seed_rank_gap,
-                     conf_tourney_wins, conf_tourney_avg_margin)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     conf_tourney_wins, conf_tourney_avg_margin,
+                     opp_tov_pct, dreb_pct, opp_3p_pct,
+                     opp_foul_rate, team_3p_rate, opp_3p_rate)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     season, team_id,
@@ -199,7 +205,9 @@ def load_season(conn, season: int) -> dict:
                     s.get("tov_ratio"), s.get("oreb_pct"), s.get("ft_rate"),
                     s.get("ft_pct"), s.get("pace"),
                     seed_rank_gap,
-                    None, None,  # conf_tourney_wins/avg_margin populated in Step 6
+                    None, None,   # conf_tourney_wins/avg_margin populated in Step 6
+                    s.get("opp_tov_pct"), s.get("dreb_pct"), s.get("opp_3p_pct"),
+                    s.get("opp_foul_rate"), s.get("team_3p_rate"), s.get("opp_3p_rate"),
                 ),
             )
             counts["metrics"] += 1
@@ -261,10 +269,55 @@ def load_season(conn, season: int) -> dict:
         except Exception as e:
             logger.warning(f"Error updating conf tourney stats for {team_name}: {e}")
 
+    # --- Step 7: Shooting stats -> team_rim_rate ---
+    # get_team_season_shooting_stats requires team or conference filter (no bulk-by-season).
+    # Pass the ~68 tournament team names; one API call per team.
+    tournament_team_names = list(team_id_map.keys())
+    shooting = get_team_shooting_stats(season, tournament_team_names)
+    for team_name, sh in shooting.items():
+        team_id = team_id_map.get(team_name)
+        if not team_id:
+            continue
+        try:
+            conn.execute(
+                """
+                UPDATE mm_team_metrics SET team_rim_rate = ?
+                WHERE season = ? AND team_id = ?
+                """,
+                (sh.get("team_rim_rate"), season, team_id),
+            )
+            counts["shooting"] += 1
+        except Exception as e:
+            logger.warning(f"Error updating shooting stats for {team_name}: {e}")
+
+    # --- Step 8: Game-level pace -> TSI ---
+    # Fetches all regular-season game box scores, groups by team, computes
+    # TSI = std(game_pace) / mean(game_pace). Single API call for the whole season.
+    try:
+        tsi_map = get_team_game_pace_stats(season, tournament_team_names)
+        for team_name, tsi_val in tsi_map.items():
+            team_id = team_id_map.get(team_name)
+            if not team_id or tsi_val is None:
+                continue
+            try:
+                conn.execute(
+                    """
+                    UPDATE mm_team_metrics SET tsi = ?
+                    WHERE season = ? AND team_id = ?
+                    """,
+                    (tsi_val, season, team_id),
+                )
+                counts["tsi"] += 1
+            except Exception as e:
+                logger.warning(f"Error updating TSI for {team_name}: {e}")
+    except Exception as e:
+        logger.warning(f"Error fetching game pace stats for {season}: {e}")
+
     logger.info(
         f"Season {season}: {counts['games']} games, {counts['teams']} teams, "
         f"{counts['metrics']} metrics rows, {counts['lines']} betting lines, "
-        f"{counts['conf_tourney']} conf tourney updates"
+        f"{counts['conf_tourney']} conf tourney, "
+        f"{counts['shooting']} shooting, {counts['tsi']} TSI updates"
     )
     return counts
 
