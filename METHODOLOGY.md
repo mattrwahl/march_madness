@@ -493,6 +493,98 @@ march_madness/
 
 ---
 
+## Risk Profile
+
+### Method
+
+200,000-iteration bootstrap over the 11 observed season-level tiered unit returns
+(2014–2025, excluding 2020). Each iteration resamples the 11 seasons with replacement.
+Run via `analyze_bootstrap.py`.
+
+### Observed Season Distribution
+
+| Season | Units | Split |
+|--------|-------|-------|
+| 2014 | +2.750u | Train |
+| 2015 | +0.000u | Train |
+| 2016 | -0.125u | Train |
+| 2017 | +0.250u | Train |
+| 2018 | +4.825u | Train |
+| 2019 | +3.241u | Train |
+| 2021 | +10.394u | Train |
+| 2022 | +0.353u | Train |
+| 2023 | +0.281u | Val |
+| 2024 | +6.300u | Val |
+| 2025 | +6.074u | Test |
+
+**Mean: +3.12u/yr. Std: 3.45u/yr. 1 losing season in 11 (9.1%).**
+
+The distribution is right-skewed: three seasons (2021, 2024, 2025) account for +22.8u of
+the +34.3u total. The only losing season (2016, -0.125u) was barely negative.
+
+### Single-Season Risk
+
+- **P(losing season): ~9%** — driven entirely by the single 2016 observation.
+- **Annual return percentiles** (bootstrap):
+
+| Percentile | Return |
+|---|---|
+| p5 | -0.12u |
+| p10 | +0.00u |
+| p25 | +0.25u |
+| p50 | +2.75u |
+| p75 | +6.07u |
+| p90 | +6.30u |
+| p95 | +10.39u |
+
+The p5 scenario is approximately breakeven; even the worst observed outcome is a
+loss of less than $13 at $100/unit. No catastrophic downside exists in the empirical data.
+
+### Multi-Year Scenarios
+
+| Horizon | P(net loss) | p5 cumul. | Median | p95 cumul. |
+|---|---|---|---|---|
+| 3 years | 0.5% | +0.5u | +9.2u | +19.7u |
+| 5 years | 0.1% | +4.0u | +15.4u | +28.4u |
+| 10 years | ~0.0% | +15.0u | +30.8u | +49.1u |
+
+The strategy is nearly certain to be profitable over any 5-year window given the observed
+return distribution. Even the 5th percentile 5-year scenario returns +$400 at $100/unit.
+
+### Drawdown
+
+The maximum drawdown within any bootstrapped multi-year window is structurally trivial:
+the p90 worst drawdown over a 5-year run is ~0.1u (~$10). This reflects the shallow
+nature of the only losing season — a drawdown in this strategy manifests as **variance in
+upside** (missing a +10u year) rather than deep peak-to-trough losses.
+
+Longest consecutive losing streak: P(2+ losing seasons in a row) is ~3% over 5 years
+and ~7% over 10 years.
+
+### Weight Sensitivity
+
+A separate perturbation sweep (±20% on each weight, renormalized) confirmed the model
+is not razor-tuned. All 20 perturbation configurations remained profitable; tiered unit
+totals ranged from +31.6u to +35.4u vs the +34.3u baseline.
+Run via `analyze_weight_sensitivity.py`.
+
+### Caveats
+
+The bootstrap resamples from the observed 11-season distribution and does not capture:
+
+1. **Regime risk** — if the NCAA selection committee changes methodology or sportsbooks
+   close the mispricing gap, future returns may differ structurally from the observed data.
+2. **Small-sample risk** — 11 seasons is a thin base. The true P(losing season) may be
+   higher than 1/11; the observed rate benefits from a favorable 11-year window.
+3. **Right-tail concentration** — 2021 (+10.4u) alone is 30% of total observed profit.
+   If such outlier years occur less frequently going forward, the mean shifts down.
+
+The bootstrap is honest about the *observed* distribution being favorable. The core bet
+is that the analytical edge (systematic under-seeding of peaking mid-major teams)
+persists in the modern analytics era.
+
+---
+
 ## Known Limitations
 
 ### Sample Size

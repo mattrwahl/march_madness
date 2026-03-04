@@ -186,6 +186,33 @@ fixed flat/E8 V1             +12.70u    -0.65u      $200        --  archived
 ```
 Note: v6-geomean train+val for tiered = +28.27u (8 train + 2 val seasons); total 11 seasons = +34.34u.
 
+## Risk Profile (Bootstrap Validation — 2026-03-04)
+
+200,000-iteration bootstrap over 11 observed season-level tiered unit returns.
+Season distribution: mean +3.12u/yr, std 3.45u/yr, 1 losing season in 11 (9.1%).
+Right-skewed: 2021 +10.4u, 2024 +6.3u, 2025 +6.1u drive upside; worst season -0.125u.
+
+```
+Metric                              Value
+P(losing season)                    ~9%   (1/11 empirical; loss = -0.125u)
+Expected units/yr                   +3.12u
+Worst single season (observed)      -0.125u  (2016)
+
+5-year cumulative (bootstrap):
+  p5  / median / p95                +4.0u / +15.4u / +28.4u
+  P(net loss over 5 yrs)            <0.1%
+  Worst drawdown p90                ~0.1u   (trivial — only 1 shallow losing season)
+
+10-year cumulative (bootstrap):
+  p5  / median / p95                +15.0u / +30.8u / +49.1u
+  P(net loss over 10 yrs)           ~0.0%
+```
+
+Key caveat: bootstrap resamples the observed 11-season distribution and does not
+capture regime risk (committee methodology change, market closing the mispricing gap)
+or the possibility that the true loss rate is higher than 1/11.
+Run: `python march_madness/analyze_bootstrap.py`
+
 ## Composite Feature Indices (V5/V6 only)
 
 Computed in `compute_composite_features()` in `features.py`:
