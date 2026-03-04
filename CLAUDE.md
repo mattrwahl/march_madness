@@ -56,7 +56,7 @@ pools — they have not yet earned their bracket slot. This is enforced in `load
 
 ### Flat (secondary for v6-geomean)
 - Bet $25 each round independently per team. Total $200/yr.
-- Sign-corrected validation (2026-03-04): flat +28.50u total vs tiered +34.34u total — tiered is primary for v6-geomean.
+- Corrected validation (2026-03-04): flat +6.92u total vs tiered +9.92u total — tiered is primary for v6-geomean.
 
 ### Overlap-Tiered (PRIMARY for V2 — legacy)
 - Pool = fixed-8 V2 picks (always 8 teams).
@@ -76,7 +76,7 @@ pools — they have not yet earned their bracket slot. This is enforced in `load
 - Top 4 picks (by model score): $37.50/round. Bottom 4 picks: $12.50/round.
 - Same total budget ($200/yr). Assigns higher stake by score rank, not model agreement.
 - **V2 train+val**: +34.37u  **2025 test**: +3.14u  ROI/$100: +1.56
-- **V6-geomean (sign-corrected, 2026-03-04)**: +34.34u total, val +6.58u, test +6.07u, ROI/pick: +0.390 — tiered beats flat by +5.84u. Use tiered for 2026.
+- **V6-geomean (corrected 2026-03-04)**: +9.92u total, val +0.56u, test +0.69u, ROI/pick: +0.113 — tiered beats flat by +3.00u. Use tiered for 2026.
 - Run with: `python main.py report --tiered` (V2) or `python main.py report --v6-geomean --tiered` (v6-geomean)
 
 ### Rollover (comparison only — not recommended)
@@ -104,15 +104,15 @@ Team stops being bet on after winning a game in the target round:
   no joint optimization — avoids weight collapse on 8-season training set.
 - Weights: srg=-0.2795, ctw=+0.3217, dfi=+0.2025, tsi=+0.1963 (sign corrected 2026-03-03)
 - **Tiered (PRIMARY)**: top-4 picks $37.50/round, bottom-4 $12.50/round
-  - **Val (2023+2024)**: +6.58u  (+0.281u / +6.300u)
-  - **Test (2025)**: +6.07u
-  - **Total (11 seasons)**: +34.34u  ROI/pick: +0.390
+  - **Val 2023**: -1.073u  |  **Val 2024**: +1.629u  |  **Val combined**: +0.556u
+  - **Test (2025)**: +0.691u  (Michigan S16 +0.254u, McNeese R32 +0.325u, Drake R32 +0.250u)
+  - **Total (11 seasons)**: +9.918u  ROI/pick: +0.113
 - **Flat (reference)**: $25/round each
-  - **Val (2023+2024)**: +4.37u  (+0.837u / +3.533u)  — beats V2 gate (+2.08u) by +2.29u
-  - **Test (2025)**: +4.68u  (Michigan S16 +1.26u, McNeese R32 +1.48u, Drake R32 +1.25u)
-  - **Total (11 seasons)**: +28.50u  ROI/pick: +0.324
-- Weights saved in `mm_model_weights` with `notes LIKE 'model=v6-geomean %'` (id=21, sign-corrected)
-  Note: id=20 has wrong-sign w_seed_rank_gap=+0.2795; id=21 is correct (-0.2795). Always use latest.
+  - **Val (2023+2024)**: -0.302u  (-0.721u / +0.419u)
+  - **Test (2025)**: +0.225u
+  - **Total (11 seasons)**: +6.916u  ROI/pick: +0.079
+- Weights saved in `mm_model_weights` with `notes LIKE 'model=v6-geomean %'` (id=22, corrected 2026-03-04)
+  Note: id=20 wrong-sign (+0.2795); id=21 sign-corrected only; id=22 is current correct weights.
 - Run: `python main.py train --v6-geomean`
 
 ### Geomean Weight Derivation
@@ -176,41 +176,41 @@ Borda weakness: structurally over-democratic; a team ranked #1 on one feature an
 ### Comparison Summary (all strategies, 11 seasons incl. 2025 test)
 ```
 Strategy                     Train+Val    Test      Budget/yr   ROI/pick
-overlap-tiered V2            +43.19u    +3.97u      $200        varies
-fixed tiered/E8 v6-geomean   +28.27u    +6.07u      $200        +0.390   <-- PRIMARY
-fixed flat/E8 v6-geomean     +23.82u    +4.68u      $200        +0.324   (reference)
-fixed tiered/E8 V2           +34.37u    +3.14u      $200        +0.196
-fixed flat/E8 V2             +32.62u    +3.29u      $200        +0.185
-variable flat/E8 V2          +21.89u    +1.58u      var         +0.547/pick
-fixed flat/E8 V1             +12.70u    -0.65u      $200        --  archived
+overlap-tiered V2            +43.19u*   +3.97u*     $200        varies    (* not yet bug-corrected)
+fixed tiered/E8 v6-geomean    +9.23u    +0.69u      $200        +0.113   <-- PRIMARY (corrected)
+fixed flat/E8 v6-geomean      +6.69u    +0.23u      $200        +0.079   (reference, corrected)
+fixed tiered/E8 V2           +34.37u*   +3.14u*     $200        --        (* not yet bug-corrected)
+fixed flat/E8 V2             +32.62u*   +3.29u*     $200        --        (* not yet bug-corrected)
+variable flat/E8 V2          +21.89u*   +1.58u*     var         --        (* not yet bug-corrected)
+fixed flat/E8 V1             +12.70u*   -0.65u*     $200        --  archived (* not yet bug-corrected)
 ```
-Note: v6-geomean train+val for tiered = +28.27u (8 train + 2 val seasons); total 11 seasons = +34.34u.
+v6-geomean corrected 2026-03-04 for triple-counting, even-money backfill, and round encoding.
+V2/V1 numbers use pre-fix simulation and may be similarly inflated by the triple-counting bug.
 
-## Risk Profile (Bootstrap Validation — 2026-03-04)
+## Risk Profile (Bootstrap Validation — corrected 2026-03-04)
 
 200,000-iteration bootstrap over 11 observed season-level tiered unit returns.
-Season distribution: mean +3.12u/yr, std 3.45u/yr, 1 losing season in 11 (9.1%).
-Right-skewed: 2021 +10.4u, 2024 +6.3u, 2025 +6.1u drive upside; worst season -0.125u.
+Season distribution: mean +0.90u/yr, std 1.74u/yr, 4 losing seasons in 11 (36%).
+Best years: 2014 +4.5u, 2021 +2.6u, 2024 +1.6u. Worst: 2022 -1.2u, 2023 -1.1u.
 
 ```
 Metric                              Value
-P(losing season)                    ~9%   (1/11 empirical; loss = -0.125u)
-Expected units/yr                   +3.12u
-Worst single season (observed)      -0.125u  (2016)
+P(losing season)                    ~36%  (4/11 empirical)
+Expected units/yr                   +0.90u
+Worst single season (observed)      -1.216u  (2022)
 
 5-year cumulative (bootstrap):
-  p5  / median / p95                +4.0u / +15.4u / +28.4u
-  P(net loss over 5 yrs)            <0.1%
-  Worst drawdown p90                ~0.1u   (trivial — only 1 shallow losing season)
+  p5  / median / p95                -1.3u / +4.3u / +11.0u
+  P(net loss over 5 yrs)            11.1%
+  Worst drawdown p90                ~2.3u   (~$230 at $100/unit)
 
 10-year cumulative (bootstrap):
-  p5  / median / p95                +15.0u / +30.8u / +49.1u
-  P(net loss over 10 yrs)           ~0.0%
+  p5  / median / p95                +0.6u / +8.8u / +17.9u
+  P(net loss over 10 yrs)           3.7%
 ```
 
-Key caveat: bootstrap resamples the observed 11-season distribution and does not
-capture regime risk (committee methodology change, market closing the mispricing gap)
-or the possibility that the true loss rate is higher than 1/11.
+Key caveat: bootstrap resamples the observed 11-season distribution. These are
+corrected numbers after fixing the triple-counting and even-money bugs.
 Run: `python march_madness/analyze_bootstrap.py`
 
 ## Composite Feature Indices (V5/V6 only)

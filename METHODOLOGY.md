@@ -14,7 +14,13 @@ market pricing is most likely to be stale relative to true team quality.
 
 **Current primary model:** `v6-fixed-8-geomean` — 4 features, pre-specified geomean
 weights, fixed 8 picks per year, score-tiered ($37.50/$12.50 per pick), E8 cash-out.
-Score-tiered total (11 seasons): **+34.34u**. Val: **+6.58u**. Test 2025: **+6.07u**.
+Score-tiered total (11 seasons): **+9.92u** (+0.90u/yr). Val+Test: **+1.25u**. Test 2025: **+0.69u**.
+
+> **Note (2026-03-04 data corrections):** Prior stats (+34.34u tiered) were inflated ~3-4x by
+> two simulation bugs: (1) a bare LEFT JOIN over 3 betting-line providers triple-counted each win;
+> (2) 2014-2017 had no lines and fell back to even money, undervaluing underdog wins but also
+> accidentally correcting for the triple-count. A third fix corrected the round encoding for
+> 2014-2015. After all three fixes the corrected total is +9.92u tiered / +6.92u flat.
 
 ---
 
@@ -49,17 +55,17 @@ This is intentionally conservative. Profits compound through winning rounds, but
 never wipes prior gains. The result is asymmetric upside: a team that wins 3 rounds
 generates 3 independent profits; a team that loses R64 costs only one $25 stake.
 
-**Why tiered and not flat for v6-geomean (sign-corrected):** With correct-sign weights, under-seeded teams with the strongest composite signal reliably rank #1-4. The geomean score now correctly concentrates conviction at the top — Loyola Chicago 2018 (#1), Oregon State 2021 (#2), NC State 2024 (#2), Michigan 2025 (#2) all rank in the top 4 and drive most of the gains. Tiered ($37.50 top-4 / $12.50 bottom-4) beats flat by +5.84u total, winning on both val (+2.21u) and test (+1.40u). See Score-Tiered section.
+**Why tiered and not flat for v6-geomean (sign-corrected):** With correct-sign weights, under-seeded teams with the strongest composite signal reliably rank #1-4. Tiered ($37.50 top-4 / $12.50 bottom-4) beats flat by +3.00u total (corrected 2026-03-04), with positive out-of-sample advantage: tiered val+test = +1.25u vs flat val+test = -0.08u. See Score-Tiered section.
 
 ### Score-Tiered Betting (primary strategy for v6-geomean)
 Top 4 picks by composite score: $37.50/round. Bottom 4 picks: $12.50/round.
 Same total budget ($200/yr). Determined by model rank at pick time (pre-tournament).
 
-**v6-fixed-8-geomean results (sign-corrected 2026-03-04):**
-- Val (2023+2024): +6.58u (+0.281u / +6.300u)
-- Test (2025): +6.07u
-- Total (11 seasons): +34.34u  ROI/pick: +0.390
-- Beats flat by +5.84u total
+**v6-fixed-8-geomean results (corrected 2026-03-04 after bug fixes):**
+- Val 2023: -1.073u  |  Val 2024: +1.629u  |  Val combined: +0.556u
+- Test (2025): +0.691u
+- Total (11 seasons): +9.918u  ROI/pick: +0.113
+- Beats flat by +3.00u total (+9.92u vs +6.92u)
 
 Rationale: with correct-sign weights, the composite score concentrates the strongest
 under-seeding signals at the top. Picks #1-4 averaged +1.04u each; picks #5-8 averaged
@@ -343,25 +349,25 @@ or regularization strength. Abandoned in favor of pre-specified geomean weights.
 Same 4-feature coreB set (srg, ctw, dfi, tsi). Weights derived from geomean(SFM_val,
 SFM_test) per feature — no joint optimization. See Weight Determination above.
 
-Results (sign-corrected 2026-03-03, tiered added 2026-03-04):
+Results (corrected 2026-03-04 after triple-counting, even-money, and round-encoding bug fixes):
 ```
 Flat:
-  Train (8 seasons):  +19.45u   avg +2.43u/yr
-  Val   (2023+2024):  +4.37u    (+0.837u / +3.533u)   beats V2 gate by +2.29u
-  Test  (2025):       +4.68u    Michigan S16 +1.26u, McNeese R32 +1.48u, Drake R32 +1.25u
-  Total (11 seasons): +28.50u   ROI/pick: +0.324
+  Train (8 seasons):  +6.992u   avg +0.874u/yr
+  Val   (2023+2024):  -0.302u   (-0.721u / +0.419u)
+  Test  (2025):       +0.225u   Michigan S16 +0.254u, McNeese R32 +0.325u, Drake R32 +0.250u
+  Total (11 seasons): +6.916u   ROI/pick: +0.079
 Tiered (top-4 $37.50 / bottom-4 $12.50):
-  Val   (2023+2024):  +6.58u    (+0.281u / +6.300u)
-  Test  (2025):       +6.07u
-  Total (11 seasons): +34.34u   ROI/pick: +0.390  <- primary strategy for 2026
+  Train (8 seasons):  +8.671u   avg +1.084u/yr
+  Val   (2023+2024):  +0.556u   (-1.073u / +1.629u)
+  Test  (2025):       +0.691u
+  Total (11 seasons): +9.918u   ROI/pick: +0.113  <- primary strategy for 2026
 ```
 
 Sign fix note: original (incorrect) positive weight for seed_rank_gap rewarded
-over-seeded teams. Fix costs ~0.7u total vs original but correctly picks NC State 2024
-(11-seed, 5 conf wins, E8) which the original model missed.
+over-seeded teams. Fix correctly picks NC State 2024 (11-seed, 5 conf wins, E8).
 Variable-N / threshold sweep: fixed-8 is already optimal (see section above).
-Tiered comparison re-run after sign fix (2026-03-04) — tiered is now primary.
-Weights stored in `mm_model_weights` with `notes LIKE 'model=v6-geomean %'` (id=21, sign-corrected; id=20 has wrong-sign +0.2795).
+Tiered beats flat by +3.0u total and +1.32u on val+test — tiered remains primary.
+Weights stored in `mm_model_weights` with `notes LIKE 'model=v6-geomean %'` (id=22, corrected; id=21 sign-corrected only; id=20 wrong-sign).
 
 ---
 
@@ -370,19 +376,21 @@ Weights stored in `mm_model_weights` with `notes LIKE 'model=v6-geomean %'` (id=
 ```
 Strategy                   Train+Val    Test 2025   Budget/yr   Notes
 ---------------------------------------------------------------------------
-overlap-tiered V2          +43.19u     +3.97u       $200        V2 legacy; variable-N signal
-v6-tiered-geomean          +28.27u     +6.07u       $200        +0.390   <-- CURRENT PRIMARY
-v6-flat-geomean            +23.82u     +4.68u       $200        +0.324   (reference)
-score-tiered V2            +34.37u     +3.14u       $200        V2 legacy
-flat V2                    +32.62u     +3.29u       $200        V2 legacy
-variable-N V2              +21.89u     +1.58u       varies      4 picks/yr; +0.547u/pick ROI
-flat V1                    +12.70u     -0.65u       $200        archived
+overlap-tiered V2          +43.19u*    +3.97u*      $200        V2 legacy; variable-N signal
+v6-tiered-geomean           +9.23u     +0.69u       $200        +0.113   <-- CURRENT PRIMARY
+v6-flat-geomean             +6.69u     +0.23u       $200        +0.079   (reference)
+score-tiered V2            +34.37u*    +3.14u*      $200        V2 legacy
+flat V2                    +32.62u*    +3.29u*      $200        V2 legacy
+variable-N V2              +21.89u*    +1.58u*      varies      4 picks/yr
+flat V1                    +12.70u*    -0.65u*      $200        archived
 ```
 
-Note: v6-geomean train+val for tiered covers 10 seasons (+28.27u); total 11 seasons = +34.34u.
-v6-geomean weights sign-corrected 2026-03-03 (seed_rank_gap weight now negative).
-The overlap-tiered V2 total includes all 11 seasons at +43.19u but relies on a two-model
-system with higher complexity; v6-geomean is the simpler, better-generalized primary model.
+* V2 and legacy numbers have NOT been corrected for the triple-counting or even-money bugs.
+  They are included as-reported for historical reference only. v6-geomean numbers are
+  corrected as of 2026-03-04.
+
+Note: v6-geomean corrected 2026-03-04 after fixing three simulation bugs. See Data Corrections
+section. Tiered beats flat by +3.0u total (+9.92u vs +6.92u) and +1.32u on val+test.
 
 ---
 
@@ -503,69 +511,73 @@ Run via `analyze_bootstrap.py`.
 
 ### Observed Season Distribution
 
-| Season | Units | Split |
+(Corrected 2026-03-04 — after triple-counting, even-money backfill, and round-encoding fixes)
+
+| Season | Units (tiered) | Split |
 |--------|-------|-------|
-| 2014 | +2.750u | Train |
-| 2015 | +0.000u | Train |
-| 2016 | -0.125u | Train |
-| 2017 | +0.250u | Train |
-| 2018 | +4.825u | Train |
-| 2019 | +3.241u | Train |
-| 2021 | +10.394u | Train |
-| 2022 | +0.353u | Train |
-| 2023 | +0.281u | Val |
-| 2024 | +6.300u | Val |
-| 2025 | +6.074u | Test |
+| 2014 | +4.489u | Train |
+| 2015 | -0.827u | Train |
+| 2016 | +1.308u | Train |
+| 2017 | +1.931u | Train |
+| 2018 | +0.608u | Train |
+| 2019 | -0.253u | Train |
+| 2021 | +2.631u | Train |
+| 2022 | -1.216u | Train |
+| 2023 | -1.073u | Val |
+| 2024 | +1.629u | Val |
+| 2025 | +0.691u | Test |
 
-**Mean: +3.12u/yr. Std: 3.45u/yr. 1 losing season in 11 (9.1%).**
+**Mean: +0.90u/yr. Std: 1.74u/yr. 4 losing seasons in 11 (36.4%).**
 
-The distribution is right-skewed: three seasons (2021, 2024, 2025) account for +22.8u of
-the +34.3u total. The only losing season (2016, -0.125u) was barely negative.
+The distribution still shows positive expectation but with higher variance and more
+losing seasons than previously reported. 2014 (+4.5u) and 2021 (+2.6u) are the standout
+years; 4 seasons (2015, 2019, 2022, 2023) were losses.
 
 ### Single-Season Risk
 
-- **P(losing season): ~9%** — driven entirely by the single 2016 observation.
+- **P(losing season): ~36%** — 4 of 11 observed seasons were negative.
 - **Annual return percentiles** (bootstrap):
 
 | Percentile | Return |
 |---|---|
-| p5 | -0.12u |
-| p10 | +0.00u |
-| p25 | +0.25u |
-| p50 | +2.75u |
-| p75 | +6.07u |
-| p90 | +6.30u |
-| p95 | +10.39u |
+| p5 | -1.22u |
+| p10 | -1.07u |
+| p25 | -0.83u |
+| p50 | +0.69u |
+| p75 | +1.93u |
+| p90 | +2.63u |
+| p95 | +4.49u |
 
-The p5 scenario is approximately breakeven; even the worst observed outcome is a
-loss of less than $13 at $100/unit. No catastrophic downside exists in the empirical data.
+The median season is +0.69u (+$69 at $100/unit). A losing year is common (~36%);
+the typical loss is around 1u ($100). The strategy has positive expected value but
+requires a multi-year commitment to smooth variance.
 
 ### Multi-Year Scenarios
 
 | Horizon | P(net loss) | p5 cumul. | Median | p95 cumul. |
 |---|---|---|---|---|
-| 3 years | 0.5% | +0.5u | +9.2u | +19.7u |
-| 5 years | 0.1% | +4.0u | +15.4u | +28.4u |
-| 10 years | ~0.0% | +15.0u | +30.8u | +49.1u |
+| 3 years | 17.8% | -1.7u | +2.5u | +7.8u |
+| 5 years | 11.1% | -1.3u | +4.3u | +11.0u |
+| 10 years | 3.7% | +0.6u | +8.8u | +17.9u |
 
-The strategy is nearly certain to be profitable over any 5-year window given the observed
-return distribution. Even the 5th percentile 5-year scenario returns +$400 at $100/unit.
+Over 5 years the strategy is profitable ~89% of the time; the median is +$430 at
+$100/unit. Over 10 years P(net loss) drops to 3.7%. Two consecutive losing seasons
+are common (~37% over 5 years).
 
 ### Drawdown
 
-The maximum drawdown within any bootstrapped multi-year window is structurally trivial:
-the p90 worst drawdown over a 5-year run is ~0.1u (~$10). This reflects the shallow
-nature of the only losing season — a drawdown in this strategy manifests as **variance in
-upside** (missing a +10u year) rather than deep peak-to-trough losses.
+The p90 worst drawdown over a 5-year run is ~2.3u (~$230). This is manageable but
+non-trivial — a run of 2-3 losing seasons could draw down 3u+ before recovering.
+Expect to need 2-3 winning seasons to fully recover from the worst-case stretches.
 
-Longest consecutive losing streak: P(2+ losing seasons in a row) is ~3% over 5 years
-and ~7% over 10 years.
+Longest consecutive losing streak: P(2+ losing seasons in a row) is ~37.5% over 5 years;
+~64% over 10 years.
 
 ### Weight Sensitivity
 
 A separate perturbation sweep (±20% on each weight, renormalized) confirmed the model
-is not razor-tuned. All 20 perturbation configurations remained profitable; tiered unit
-totals ranged from +31.6u to +35.4u vs the +34.3u baseline.
+is not razor-tuned. All 20 perturbation configurations remained profitable for flat;
+tiered unit totals ranged from +7.94u to +11.12u vs the +9.92u baseline (spread ≤ 2u).
 Run via `analyze_weight_sensitivity.py`.
 
 ### Caveats
@@ -585,6 +597,57 @@ persists in the modern analytics era.
 
 ---
 
+## Data Corrections (2026-03-04)
+
+Three simulation bugs were identified and corrected after examining why 2014 (+2.75u reported)
+seemed low despite 2 E8 teams:
+
+### Bug 1: Triple-Counting Wins (2018-2025)
+`get_team_tournament_results` used `LEFT JOIN mm_betting_lines` with no GROUP BY. CBBD
+provides 3 provider records per game (consensus, ESPN BET, teamrankings). This caused the
+simulation loop to process each win 3 times — 3 independent profit calculations per won game.
+A team winning R64 (+130) and losing R32 was counted as: win, win, win, lose (3x profits,
+1x loss) instead of: win, lose (1x profit, 1x loss). This inflated results ~3-4x for all
+seasons with lines (2018-2025).
+
+**Fix**: `get_team_tournament_results` now uses a subquery with `ROW_NUMBER() OVER
+(PARTITION BY game_id ORDER BY provider priority)` to pick exactly one line per game,
+preferring consensus > historical_avg > ESPN BET > others.
+
+### Bug 2: Even-Money Fallback for 2014-2017
+CBBD has no betting lines for 2014-2017 (zero records). The `_ml_profit` function falls
+back to even money (+100) when no line exists. This meant a 12-seed winning as a +250
+underdog was simulated as +$25 (flat) instead of +$62.50. Corrected by backfilling
+synthetic 'historical_avg' lines derived from 2018-2025 consensus averages keyed by
+(team_seed, opp_seed, round). Script: `backfill_synthetic_lines.py`.
+
+### Bug 3: Round Encoding for 2014-2015
+CBBD stored 2014-2015 tournament rounds with a different encoding:
+- round=64 (4 games) = First Four play-in games (should be round=65)
+- round=32 (32 games) = actual R64 (should be round=64)
+- round=NULL (16 games) = actual R32 (should be round=32)
+
+`ORDER BY round DESC` in the simulation placed NULL games last, causing the R32 results
+to be silently skipped for teams reaching S16 or further. First Four teams were also not
+excluded from the eligible pool (filter looked for round=65 which didn't exist in 2014-2015).
+
+**Fix**: `backfill_synthetic_lines.py` applies `UPDATE mm_games SET round = ...` to
+normalize 2014-2015 to the standard encoding used by 2016+.
+
+### Impact Summary
+```
+                    Old (bugged)    New (corrected)
+Flat total (11yr):    +28.50u         +6.92u
+Tiered total (11yr):  +34.34u         +9.92u
+P(losing season):       ~9%            ~36%
+Expected units/yr:     +3.12u          +0.90u
+```
+
+The model still shows positive expected value. The pick selection logic is sound;
+only the simulation math was wrong.
+
+---
+
 ## Known Limitations
 
 ### Sample Size
@@ -594,9 +657,10 @@ scale — this is why the geomean SFM approach was adopted. Adding 2008-2013 dat
 noise. The current approach is calibrated for the modern NET-era selection committee.
 
 ### Line Availability
-Betting lines are reliably available from 2015 onward via CBBD. Earlier seasons assume
-even money when lines are missing, slightly understating true unit returns for strong
-underdog wins in those years.
+CBBD betting lines are reliable from 2018 onward. 2019 and 2024-2025 have 2-20% missing
+lines (fall back to even money for those games). 2014-2017 had zero real lines — these are
+backfilled with synthetic 'historical_avg' lines derived from 2018-2025 consensus averages
+by (team_seed, opp_seed, round) matchup type. See Data Corrections section.
 
 ### Team Name Matching (Conference Tournament)
 Conf tournament stats are matched to NCAA tournament teams by CBBD name. Spelling

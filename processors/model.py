@@ -82,7 +82,21 @@ def get_team_tournament_results(
             bl.team1_novig_prob, bl.team2_novig_prob,
             CASE WHEN g.team1_id = ? THEN 'team1' ELSE 'team2' END as team_side
         FROM mm_games g
-        LEFT JOIN mm_betting_lines bl ON bl.game_id = g.id
+        LEFT JOIN (
+            SELECT game_id,
+                   team1_moneyline, team2_moneyline,
+                   team1_novig_prob, team2_novig_prob,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY game_id
+                       ORDER BY CASE provider
+                           WHEN 'consensus'      THEN 1
+                           WHEN 'historical_avg' THEN 2
+                           WHEN 'ESPN BET'       THEN 3
+                           ELSE                       4
+                       END
+                   ) AS rn
+            FROM mm_betting_lines
+        ) bl ON bl.game_id = g.id AND bl.rn = 1
         WHERE g.season = ?
           AND (g.team1_id = ? OR g.team2_id = ?)
           AND g.round <= 64
