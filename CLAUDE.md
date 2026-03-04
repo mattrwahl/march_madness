@@ -1,7 +1,7 @@
 # March Madness Betting Model — Claude Context
 
 ## Project Purpose
-Identify under-seeded NCAA Tournament teams (seeds 5-12) and bet using flat $25/pick
+Identify under-seeded NCAA Tournament teams (seeds 5-12) and bet using score-tiered $37.50/$12.50/pick
 strategy. Primary model is **v6-fixed-8-geomean** (4 features, geomean weights, no
 optimizer). Secondary legacy strategy: overlap-tiered V2 (fixed-8 + variable-N agreement).
 
@@ -54,10 +54,9 @@ pools — they have not yet earned their bracket slot. This is enforced in `load
 
 ## Bet Styles
 
-### Flat (PRIMARY for v6-geomean)
+### Flat (secondary for v6-geomean)
 - Bet $25 each round independently per team. Total $200/yr.
-- Tiered comparison has not been re-run after the 2026-03-03 sign fix on seed_rank_gap.
-  With original (incorrect) weights: flat +29.22u vs tiered +24.05u. Re-evaluate before using tiered.
+- Sign-corrected validation (2026-03-04): flat +28.50u total vs tiered +34.34u total — tiered is primary for v6-geomean.
 
 ### Overlap-Tiered (PRIMARY for V2 — legacy)
 - Pool = fixed-8 V2 picks (always 8 teams).
@@ -73,12 +72,12 @@ pools — they have not yet earned their bracket slot. This is enforced in `load
 - **Train ROI/$100**: +2.23  **Val ROI/$100**: +0.90  **Test 2025 ROI/$100**: +1.98
 - Run with: `python main.py report --overlap`
 
-### Tiered Conviction (reference — superseded)
+### Score-Tiered (PRIMARY for v6-geomean; reference for V2)
 - Top 4 picks (by model score): $37.50/round. Bottom 4 picks: $12.50/round.
 - Same total budget ($200/yr). Assigns higher stake by score rank, not model agreement.
 - **V2 train+val**: +34.37u  **2025 test**: +3.14u  ROI/$100: +1.56
-- **V6-geomean**: flat dominates tiered by +5.17u — do NOT use tiered for v6.
-- Run with: `python main.py report --tiered`
+- **V6-geomean (sign-corrected, 2026-03-04)**: +34.34u total, val +6.58u, test +6.07u, ROI/pick: +0.390 — tiered beats flat by +5.84u. Use tiered for 2026.
+- Run with: `python main.py report --tiered` (V2) or `python main.py report --v6-geomean --tiered` (v6-geomean)
 
 ### Rollover (comparison only — not recommended)
 - $25 initial stake compounds forward through each win.
@@ -99,17 +98,21 @@ Team stops being bet on after winning a game in the target round:
 
 ## Models
 
-### v6-fixed-8-geomean (CURRENT PRIMARY — flat/E8)
+### v6-fixed-8-geomean (CURRENT PRIMARY — tiered/E8)
 - **4 features**: seed_rank_gap, conf_tourney_wins, dfi, tsi (coreB set)
 - **Fixed pre-specified weights** derived from geomean(SFM_val, SFM_test) per feature;
   no joint optimization — avoids weight collapse on 8-season training set.
 - Weights: srg=-0.2795, ctw=+0.3217, dfi=+0.2025, tsi=+0.1963 (sign corrected 2026-03-03)
-- **Train (8 seasons)**: +19.45u  avg +2.43u/yr
-- **Val (2023+2024)**: +4.37u  (+0.837u / +3.533u)  — beats V2 gate (+2.08u) by +2.29u
-- **Test (2025)**: +4.68u  (Michigan S16 +1.26u, McNeese R32 +1.48u, Drake R32 +1.25u)
-- **Total (11 seasons)**: +28.50u flat  ROI/pick: +0.324
-- Weights saved in `mm_model_weights` with `notes LIKE 'model=v6-geomean %'` (id=20)
-- **Tiered**: not re-run after sign fix — re-evaluate before using tiered for v6-geomean
+- **Tiered (PRIMARY)**: top-4 picks $37.50/round, bottom-4 $12.50/round
+  - **Val (2023+2024)**: +6.58u  (+0.281u / +6.300u)
+  - **Test (2025)**: +6.07u
+  - **Total (11 seasons)**: +34.34u  ROI/pick: +0.390
+- **Flat (reference)**: $25/round each
+  - **Val (2023+2024)**: +4.37u  (+0.837u / +3.533u)  — beats V2 gate (+2.08u) by +2.29u
+  - **Test (2025)**: +4.68u  (Michigan S16 +1.26u, McNeese R32 +1.48u, Drake R32 +1.25u)
+  - **Total (11 seasons)**: +28.50u  ROI/pick: +0.324
+- Weights saved in `mm_model_weights` with `notes LIKE 'model=v6-geomean %'` (id=21, sign-corrected)
+  Note: id=20 has wrong-sign w_seed_rank_gap=+0.2795; id=21 is correct (-0.2795). Always use latest.
 - Run: `python main.py train --v6-geomean`
 
 ### Geomean Weight Derivation
@@ -172,15 +175,16 @@ Borda weakness: structurally over-democratic; a team ranked #1 on one feature an
 
 ### Comparison Summary (all strategies, 11 seasons incl. 2025 test)
 ```
-Strategy                   Train+Val    Test      Budget/yr   ROI/pick
-overlap-tiered V2          +43.19u    +3.97u      $200        varies
-fixed flat/E8 v6-geomean   +23.82u    +4.68u      $200        +0.324   <-- NEW PRIMARY
-fixed tiered/E8 V2         +34.37u    +3.14u      $200        +0.196
-fixed flat/E8 V2           +32.62u    +3.29u      $200        +0.185
-variable flat/E8 V2        +21.89u    +1.58u      var         +0.547/pick
-fixed flat/E8 V1           +12.70u    -0.65u      $200        --  archived
+Strategy                     Train+Val    Test      Budget/yr   ROI/pick
+overlap-tiered V2            +43.19u    +3.97u      $200        varies
+fixed tiered/E8 v6-geomean   +28.27u    +6.07u      $200        +0.390   <-- PRIMARY
+fixed flat/E8 v6-geomean     +23.82u    +4.68u      $200        +0.324   (reference)
+fixed tiered/E8 V2           +34.37u    +3.14u      $200        +0.196
+fixed flat/E8 V2             +32.62u    +3.29u      $200        +0.185
+variable flat/E8 V2          +21.89u    +1.58u      var         +0.547/pick
+fixed flat/E8 V1             +12.70u    -0.65u      $200        --  archived
 ```
-Note: v6-geomean train+val = +23.82u (10 seasons); total 11 seasons = +28.50u.
+Note: v6-geomean train+val for tiered = +28.27u (8 train + 2 val seasons); total 11 seasons = +34.34u.
 
 ## Composite Feature Indices (V5/V6 only)
 
@@ -235,7 +239,7 @@ python main.py backfill --season Y   # load/reload one specific season
 python main.py train --v6-geomean         # register model, show YoY + tiered comparison
 python main.py report --v6-geomean        # flat report on all 11 seasons
 python main.py report --v6-geomean --test # test holdout only (2025)
-python main.py report --v6-geomean --tiered  # tiered vs flat (flat is better)
+python main.py report --v6-geomean --tiered  # tiered report (PRIMARY for 2026)
 
 # V2 fixed-8 model (legacy — for overlap strategy)
 python main.py train                         # flat/E8 (defaults), 10 features + L2
@@ -265,7 +269,7 @@ python march_madness/analyze_v6_threshold.py   # v6-geomean score threshold swee
 ## 2026 Workflow
 1. Run `python main.py backfill --season 2026` after Selection Sunday data is available
 2. Run `python main.py report --v6-geomean` to see v6-geomean picks for 2026
-3. Bet $25/pick flat on all 8 picks (E8 cash-out)
+3. Bet $37.50/round on picks #1-4, $12.50/round on picks #5-8 (E8 cash-out, score-tiered)
 4. Run `python main.py track` after each round to update payouts
 
 ## V3 Attempt — region_top4_net_avg (2026-03-01, REVERTED)

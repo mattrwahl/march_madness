@@ -13,8 +13,8 @@ entire bracket. We are looking for a specific, repeatable edge in a subset of ga
 market pricing is most likely to be stale relative to true team quality.
 
 **Current primary model:** `v6-fixed-8-geomean` — 4 features, pre-specified geomean
-weights, fixed 8 picks per year, flat $25/pick, E8 cash-out.
-Total across 11 seasons (2014-2025): **+28.50u**. Val: **+4.37u**. Test 2025: **+4.68u**.
+weights, fixed 8 picks per year, score-tiered ($37.50/$12.50 per pick), E8 cash-out.
+Score-tiered total (11 seasons): **+34.34u**. Val: **+6.58u**. Test 2025: **+6.07u**.
 
 ---
 
@@ -39,7 +39,7 @@ rounds where 1- and 2-seeds dominate and odds compress.
 ### Unit Definition
 One unit = $100. Bets are sized in quarter-units ($25 per pick per round).
 
-### Flat Betting (primary strategy for v6-geomean)
+### Flat Betting (secondary for v6-geomean; see Score-Tiered below)
 Each pick is bet independently at $25 per round:
 - **Win**: lock in that round's profit at the moneyline payout; move to the next round.
 - **Loss**: lose $25 for that round only. All prior profits from that pick are retained.
@@ -49,12 +49,21 @@ This is intentionally conservative. Profits compound through winning rounds, but
 never wipes prior gains. The result is asymmetric upside: a team that wins 3 rounds
 generates 3 independent profits; a team that loses R64 costs only one $25 stake.
 
-**Why flat and not tiered for v6-geomean:** The biggest winners span all 8 score ranks
-with corrected-sign weights — Loyola Chicago 2018 (#1, +2.34u), Oregon State 2021 (#2,
-+4.31u), NC State 2024 (#2, +4.01u), Nevada 2018 (#5, +3.44u), Liberty 2019 (#7,
-+2.48u). The composite score identifies *direction* (under-seeded and peaking), not
-the magnitude of tournament upside. Tiered comparison has not been re-run after the
-2026-03-03 sign fix — re-evaluate before using tiered for v6-geomean.
+**Why tiered and not flat for v6-geomean (sign-corrected):** With correct-sign weights, under-seeded teams with the strongest composite signal reliably rank #1-4. The geomean score now correctly concentrates conviction at the top — Loyola Chicago 2018 (#1), Oregon State 2021 (#2), NC State 2024 (#2), Michigan 2025 (#2) all rank in the top 4 and drive most of the gains. Tiered ($37.50 top-4 / $12.50 bottom-4) beats flat by +5.84u total, winning on both val (+2.21u) and test (+1.40u). See Score-Tiered section.
+
+### Score-Tiered Betting (primary strategy for v6-geomean)
+Top 4 picks by composite score: $37.50/round. Bottom 4 picks: $12.50/round.
+Same total budget ($200/yr). Determined by model rank at pick time (pre-tournament).
+
+**v6-fixed-8-geomean results (sign-corrected 2026-03-04):**
+- Val (2023+2024): +6.58u (+0.281u / +6.300u)
+- Test (2025): +6.07u
+- Total (11 seasons): +34.34u  ROI/pick: +0.390
+- Beats flat by +5.84u total
+
+Rationale: with correct-sign weights, the composite score concentrates the strongest
+under-seeding signals at the top. Picks #1-4 averaged +1.04u each; picks #5-8 averaged
+-0.01u each across 11 seasons. Tiered sizing matches conviction to the score ordering.
 
 ### Cash-Out Rule
 Teams are bet through a maximum of 3 rounds (R64, R32, S16), cashing out after winning
@@ -334,20 +343,25 @@ or regularization strength. Abandoned in favor of pre-specified geomean weights.
 Same 4-feature coreB set (srg, ctw, dfi, tsi). Weights derived from geomean(SFM_val,
 SFM_test) per feature — no joint optimization. See Weight Determination above.
 
-Results (sign-corrected 2026-03-03):
+Results (sign-corrected 2026-03-03, tiered added 2026-03-04):
 ```
-Train (8 seasons):  +19.45u   avg +2.43u/yr
-Val   (2023+2024):  +4.37u    (+0.837u / +3.533u)   beats V2 gate by +2.29u
-Test  (2025):       +4.68u    Michigan S16 +1.26u, McNeese R32 +1.48u, Drake R32 +1.25u
-Total (11 seasons): +28.50u   ROI/pick: +0.324
+Flat:
+  Train (8 seasons):  +19.45u   avg +2.43u/yr
+  Val   (2023+2024):  +4.37u    (+0.837u / +3.533u)   beats V2 gate by +2.29u
+  Test  (2025):       +4.68u    Michigan S16 +1.26u, McNeese R32 +1.48u, Drake R32 +1.25u
+  Total (11 seasons): +28.50u   ROI/pick: +0.324
+Tiered (top-4 $37.50 / bottom-4 $12.50):
+  Val   (2023+2024):  +6.58u    (+0.281u / +6.300u)
+  Test  (2025):       +6.07u
+  Total (11 seasons): +34.34u   ROI/pick: +0.390  <- primary strategy for 2026
 ```
 
 Sign fix note: original (incorrect) positive weight for seed_rank_gap rewarded
 over-seeded teams. Fix costs ~0.7u total vs original but correctly picks NC State 2024
 (11-seed, 5 conf wins, E8) which the original model missed.
 Variable-N / threshold sweep: fixed-8 is already optimal (see section above).
-Tiered comparison not re-run after sign fix.
-Weights stored in `mm_model_weights` with `notes LIKE 'model=v6-geomean %'` (id=20).
+Tiered comparison re-run after sign fix (2026-03-04) — tiered is now primary.
+Weights stored in `mm_model_weights` with `notes LIKE 'model=v6-geomean %'` (id=21, sign-corrected; id=20 has wrong-sign +0.2795).
 
 ---
 
@@ -357,14 +371,15 @@ Weights stored in `mm_model_weights` with `notes LIKE 'model=v6-geomean %'` (id=
 Strategy                   Train+Val    Test 2025   Budget/yr   Notes
 ---------------------------------------------------------------------------
 overlap-tiered V2          +43.19u     +3.97u       $200        V2 legacy; variable-N signal
-v6-fixed-8-geomean         +23.82u     +4.68u       $200        CURRENT PRIMARY (flat only)
+v6-tiered-geomean          +28.27u     +6.07u       $200        +0.390   <-- CURRENT PRIMARY
+v6-flat-geomean            +23.82u     +4.68u       $200        +0.324   (reference)
 score-tiered V2            +34.37u     +3.14u       $200        V2 legacy
 flat V2                    +32.62u     +3.29u       $200        V2 legacy
 variable-N V2              +21.89u     +1.58u       varies      4 picks/yr; +0.547u/pick ROI
 flat V1                    +12.70u     -0.65u       $200        archived
 ```
 
-Note: v6-geomean train+val covers 10 seasons (+23.82u); total 11 seasons = +28.50u.
+Note: v6-geomean train+val for tiered covers 10 seasons (+28.27u); total 11 seasons = +34.34u.
 v6-geomean weights sign-corrected 2026-03-03 (seed_rank_gap weight now negative).
 The overlap-tiered V2 total includes all 11 seasons at +43.19u but relies on a two-model
 system with higher complexity; v6-geomean is the simpler, better-generalized primary model.
@@ -473,7 +488,7 @@ march_madness/
 1. Run `python main.py backfill --season 2026` after Selection Sunday (mid-March).
    All 6 steps must complete, especially Step 6 (conf tournament data).
 2. Run `python main.py report --v6-geomean` to review the 8 picks.
-3. Bet $25/pick flat on all 8 picks, E8 cash-out. No tiering, no thresholding.
+3. Bet $37.50/round on picks #1-4, $12.50/round on picks #5-8, E8 cash-out (score-tiered).
 4. Run `python main.py track` after each round to update rolling payouts.
 
 ---
@@ -515,7 +530,6 @@ so they are retained, but they are not as independent as the feature names sugge
 - **Q1 wins**: Redundant with seed_rank_gap (NET already incorporates quadrant records).
 - **Last-10-games margin**: Inter-conference comparability poor; conf tournament margins
   are a better hot-team signal.
-- **Score-based tiering for v6-geomean**: Tested and confirmed to hurt (-5.17u vs flat).
-  Big winners consistently rank 5-8 by model score.
+- **Score-based tiering for v6-geomean**: Re-run after sign fix (2026-03-04); tiered now beats flat by +5.84u. Tiered is primary. Original flat-dominates note was based on wrong-sign weights.
 - **Variable-N / threshold for v6-geomean**: Fixed-8 is already optimal. All 8 picks
   score positive every season; raising the cutoff excludes the upset specialists.
