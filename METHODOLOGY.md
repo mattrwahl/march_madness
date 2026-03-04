@@ -13,7 +13,8 @@ entire bracket. We are looking for a specific, repeatable edge in a subset of ga
 market pricing is most likely to be stale relative to true team quality.
 
 **Current primary model:** `v6-fixed-8-geomean` — 4 features, pre-specified geomean
-weights, fixed 8 picks per year, score-tiered ($37.50/$12.50 per pick), E8 cash-out.
+weights, score-tiered ($37.50/$12.50 per pick), E8 cash-out. **2026 pick count TBD**
+(leaning fixed-5; see Pick Count and Threshold Analysis section).
 Score-tiered total (11 seasons): **+9.92u** (+0.90u/yr). Val+Test: **+1.25u**. Test 2025: **+0.69u**.
 
 > **Note (2026-03-04 data corrections):** Prior stats (+34.34u tiered) were inflated ~3-4x by
@@ -233,37 +234,71 @@ a conviction signal for the V2 overlap-tiered strategy, not as a standalone bett
 
 ---
 
-## Threshold / Variable-N Investigation for v6-geomean
+## Pick Count and Threshold Analysis (2026-03-04, post-correction)
 
-After finalizing v6-fixed-8-geomean, we investigated whether thresholding on the
-composite score (taking only the picks where score >= cutoff) could improve ROI per pick.
-Since weights are fixed, this is a 1-dimensional sweep — no optimizer needed.
+After the three data bug fixes (triple-counting, even-money backfill, round encoding),
+the pick-count and threshold landscape was re-evaluated with corrected data. An earlier
+analysis (wrong-sign weights, pre-correction simulation) concluded fixed-8 was optimal;
+that conclusion does not hold with corrected data.
 
-**Finding: fixed-8 is already the optimal pick count. No threshold strategy improves it.**
+### Fixed-N Comparison (N = 4 through 10, flat $25/pick/round)
 
-Three reasons:
-1. **All 8 composite scores are positive every season** (range 0.13-1.49). The model
-   has already gated on quality; there is no dead weight to prune.
-2. **The biggest winners consistently rank 5-8 by model score.** The geomean score
-   identifies *direction* (this team is better than their seed implies), not *magnitude*
-   of tournament upside. Raising the cutoff systematically excludes the upset specialists.
-3. **Expanding to 12 picks** (lowering the threshold below existing scores) adds
-   low-conviction picks that mostly lose R64, halving ROI/pick with negligible total gain.
+Each N selects exactly the top-N picks by composite score. Results use flat $25/round,
+E8 cash-out, all 11 seasons.
 
-Summary of sweep results:
+| N | Avg N/yr | Train | Val | Test | Total | ROI/pick |
+|---|---------|-------|-----|------|-------|----------|
+| 4 | 4.0 | +7.043u | +0.539u | +0.406u | +6.990u | +0.158 |
+| **5** | **5.0** | **+8.554u** | **+0.699u** | **+0.556u** | **+9.809u** | **+0.178** |
+| 6 | 6.0 | +7.083u | +0.252u | +0.556u | +7.892u | +0.120 |
+| 7 | 7.0 | +8.007u | +0.875u | +0.406u | +9.288u | +0.121 |
+| 8 | 8.0 | +6.992u | -0.301u | +0.225u | +6.916u | +0.079 |
+| 9-10 | 9-10 | — | — | — | ~+6.75u | ~+0.06 |
 
-| Threshold | Avg N/yr | Val units | Test units | Total 11-season |
-|-----------|----------|-----------|-----------|----------------|
-| >= +0.50 | 4.4 | +1.74u | +2.23u | +12.3u |
-| >= +0.25 | 7.6 | +3.55u | +2.53u | +22.5u |
-| **Fixed-8** | **8.0** | **+4.37u** | **+4.68u** | **+28.5u** |
-| Expand to 12 | 12.0 | +8.22u | +4.30u | +29.4u |
+Fixed-5 stands out: best total (+9.809u), best ROI/pick (+0.178), positive on all three
+splits. Fixed-8 underperforms fixed-5 by 2.9u total and is negative on val (-0.301u).
+The pattern suggests picks 6-8 by composite score dilute returns with low-conviction bets.
 
-Note: threshold rows computed with original (incorrect) sign; fixed-8 row updated
-to reflect corrected-sign weights. Conclusion (fixed-8 optimal) is unchanged.
+### Score Threshold Analysis (no min-N floor, flat $25/pick/round)
 
-Note: the 12-pick expansion shows better val but that is 2 seasons of noise. Train
-and test both decline; ROI/pick drops from +0.332 to +0.175.
+All picks with composite score >= cutoff. No minimum-N floor — low-conviction seasons
+naturally produce fewer bets.
+
+| Strategy | Avg N/yr | Train | Val | Test | Total | ROI/pick |
+|----------|----------|-------|-----|------|-------|----------|
+| > 0.40 threshold | 6.5 | +8.340u | -0.043u | +0.406u | +8.702u | +0.121 |
+| > 0.45 threshold | 5.7 | +7.606u | +0.207u | +0.306u | +8.118u | +0.129 |
+| **> 0.50 threshold** | **5.1** | **+8.113u** | **+0.707u** | **+0.556u** | **+9.376u** | **+0.167** |
+| Fixed-5 (reference) | 5.0 | +8.554u | +0.699u | +0.556u | +9.809u | +0.178 |
+
+Threshold > 0.50 and fixed-5 produce nearly identical performance (5.1 vs 5.0 avg picks,
+identical test +0.556u). Fixed-5 has slightly better total (+9.809 vs +9.376) and
+ROI/pick (+0.178 vs +0.167). The threshold approach is adaptive: 2023 at > 0.50 yields
+only 3 picks (Drake 1.122, Penn State 0.545, Charleston 0.506), naturally reflecting
+lower model conviction that year. Fixed-5 always picks exactly 5 regardless of field quality.
+
+Per-season pick counts at threshold > 0.50:
+```
+2014: 7 | 2015: 6 | 2016: 7 | 2017: 6 | 2018: 4 | 2019: 4
+2021: 4 | 2022: 5 | 2023: 3 | 2024: 4 | 2025: 6
+```
+
+### 2026 Strategy Status — OPEN (decision pending)
+
+No final pick-count strategy has been locked in for 2026. Leading candidates:
+
+- **Fixed-5** (leaning): best total and ROI/pick, positive on all splits, simple and
+  deterministic — always exactly 5 picks regardless of field conviction.
+- **Threshold > 0.50** (alternative): adaptive to field quality, nearly identical
+  performance to fixed-5, provides a natural quality gate for low-conviction years.
+- **Hybrid (threshold > 0.50 with fixed-5 floor)**: not yet run; would combine
+  adaptivity with a guaranteed minimum of 5 annual bets.
+
+**Overfitting concern**: 11 seasons is a thin sample. The 2.9u advantage of fixed-5 over
+fixed-8 is plausible (fewer low-conviction bets) but not statistically robust at this sample
+size. The pick-count decision will be finalized before 2026 Selection Sunday (~March 15-16).
+Until then, the code generates scores for all 8 picks; the final betting set can be trimmed
+at bet placement time without code changes.
 
 ---
 
@@ -495,8 +530,10 @@ march_madness/
 
 1. Run `python main.py backfill --season 2026` after Selection Sunday (mid-March).
    All 6 steps must complete, especially Step 6 (conf tournament data).
-2. Run `python main.py report --v6-geomean` to review the 8 picks.
-3. Bet $37.50/round on picks #1-4, $12.50/round on picks #5-8, E8 cash-out (score-tiered).
+2. Run `python main.py report --v6-geomean` to review picks (scores generated for all 8).
+3. Confirm pick count strategy before placing bets (see Pick Count and Threshold Analysis;
+   leaning fixed-5 or threshold > 0.50 — decision pending additional analysis).
+   Score-tiered: $37.50/round on top-4 picks, $12.50/round on remaining picks, E8 cash-out.
 4. Run `python main.py track` after each round to update rolling payouts.
 
 ---
@@ -687,5 +724,7 @@ so they are retained, but they are not as independent as the feature names sugge
 - **Last-10-games margin**: Inter-conference comparability poor; conf tournament margins
   are a better hot-team signal.
 - **Score-based tiering for v6-geomean**: Re-run after sign fix (2026-03-04); tiered now beats flat by +5.84u. Tiered is primary. Original flat-dominates note was based on wrong-sign weights.
-- **Variable-N / threshold for v6-geomean**: Fixed-8 is already optimal. All 8 picks
-  score positive every season; raising the cutoff excludes the upset specialists.
+- **Variable-N / threshold for v6-geomean (pre-correction conclusion, now reversed)**:
+  An early analysis with wrong-sign weights and bugged simulation concluded fixed-8 was
+  optimal. Post-correction (2026-03-04) analysis reverses this: fixed-5 and threshold
+  > 0.50 both outperform fixed-8. See Pick Count and Threshold Analysis section.

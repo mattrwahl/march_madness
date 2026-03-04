@@ -3,7 +3,8 @@
 ## Project Purpose
 Identify under-seeded NCAA Tournament teams (seeds 5-12) and bet using score-tiered $37.50/$12.50/pick
 strategy. Primary model is **v6-fixed-8-geomean** (4 features, geomean weights, no
-optimizer). Secondary legacy strategy: overlap-tiered V2 (fixed-8 + variable-N agreement).
+optimizer). **2026 pick count TBD** — leaning fixed-5 or threshold > 0.50 (currently fixed-8);
+see Pick Count / Threshold Analysis section. Secondary legacy: overlap-tiered V2.
 
 ## Stack
 - **Python 3.12** — all pipeline code
@@ -133,16 +134,19 @@ under-seeded) = better bet. The SFM optimizer used bounds (-3, 0); geomean uses
 magnitude only, so the negative sign is re-applied explicitly in `features.py`.
 
 ### Fixed-weight Comparison (equal / geomean / borda)
-Run on the same coreB feature set (srg, ctw, dfi, tsi), evaluated all 11 seasons:
+Run on the same coreB feature set (srg, ctw, dfi, tsi), evaluated all 11 seasons.
+*Note: computed pre-correction (2026-03-02); all three totals are inflated ~3-4x by the
+triple-counting bug. The relative ordering (geomean > equal; borda poor on test) holds.*
 
 | Method | Val | Test | Total |
 |--------|-----|------|-------|
-| Equal (0.25 each) | +4.04u | +2.68u | — |
-| **Geomean (sign-corrected)** | **+4.37u** | **+4.68u** | **+28.50u** |
-| Borda count | +4.77u | +0.13u | — |
+| Equal (0.25 each) | +4.04u* | +2.68u* | — |
+| **Geomean (sign-corrected)** | **+4.37u*** | **+4.68u*** | **+6.92u (corrected)** |
+| Borda count | +4.77u* | +0.13u* | — |
 
 Borda weakness: structurally over-democratic; a team ranked #1 on one feature and
 #8 on three others scores identically to a team ranked #4 on all four.
+(* = pre-correction; use for relative comparison only, not absolute unit values)
 
 ### Fixed-8 Flat/E8 V2 (legacy — pick selection for overlap strategy)
 - Selects exactly 8 teams from seeds 5-12 each year by composite score
@@ -179,6 +183,7 @@ Strategy                     Train+Val    Test      Budget/yr   ROI/pick
 overlap-tiered V2            +43.19u*   +3.97u*     $200        varies    (* not yet bug-corrected)
 fixed tiered/E8 v6-geomean    +9.23u    +0.69u      $200        +0.113   <-- PRIMARY (corrected)
 fixed flat/E8 v6-geomean      +6.69u    +0.23u      $200        +0.079   (reference, corrected)
+fixed-5 flat/E8 v6-geomean    +9.25u    +0.56u      $125        +0.178   (under analysis for 2026)
 fixed tiered/E8 V2           +34.37u*   +3.14u*     $200        --        (* not yet bug-corrected)
 fixed flat/E8 V2             +32.62u*   +3.29u*     $200        --        (* not yet bug-corrected)
 variable flat/E8 V2          +21.89u*   +1.58u*     var         --        (* not yet bug-corrected)
@@ -186,6 +191,33 @@ fixed flat/E8 V1             +12.70u*   -0.65u*     $200        --  archived (* 
 ```
 v6-geomean corrected 2026-03-04 for triple-counting, even-money backfill, and round encoding.
 V2/V1 numbers use pre-fix simulation and may be similarly inflated by the triple-counting bug.
+
+### Pick Count / Threshold Analysis (2026-03-04, post-correction)
+
+Post-correction fixed-N and threshold sweep changed the prior conclusion (fixed-8 optimal).
+All results use flat $25/pick/round, E8 cash-out, 11 seasons.
+
+**Fixed-N comparison:**
+```
+N=4: train +7.04u, val +0.54u, test +0.41u, total +6.99u, ROI/pk +0.158
+N=5: train +8.55u, val +0.70u, test +0.56u, total +9.81u, ROI/pk +0.178  <-- best
+N=6: train +7.08u, val +0.25u, test +0.56u, total +7.89u, ROI/pk +0.120
+N=7: train +8.01u, val +0.88u, test +0.41u, total +9.29u, ROI/pk +0.121
+N=8: train +6.99u, val -0.30u, test +0.23u, total +6.92u, ROI/pk +0.079  (current)
+```
+
+**Score threshold sweep (no min-N floor):**
+```
+>0.40 (avg 6.5/yr): train +8.34u, val -0.04u, test +0.41u, total +8.70u, ROI/pk +0.121
+>0.45 (avg 5.7/yr): train +7.61u, val +0.21u, test +0.31u, total +8.12u, ROI/pk +0.129
+>0.50 (avg 5.1/yr): train +8.11u, val +0.71u, test +0.56u, total +9.38u, ROI/pk +0.167
+Fixed-5 (reference): train +8.55u, val +0.70u, test +0.56u, total +9.81u, ROI/pk +0.178
+```
+
+**2026 strategy: OPEN — pending final decision.** Leading candidates are fixed-5 and
+threshold > 0.50. Hybrid (threshold > 0.50, min-5 floor) not yet evaluated.
+Overfitting caveat: 11 seasons; gap between N=5 and N=8 is plausible but not robust.
+Decision to be finalized before Selection Sunday (~March 15-16).
 
 ## Risk Profile (Bootstrap Validation — corrected 2026-03-04)
 
@@ -295,8 +327,10 @@ python march_madness/analyze_v6_threshold.py   # v6-geomean score threshold swee
 
 ## 2026 Workflow
 1. Run `python main.py backfill --season 2026` after Selection Sunday data is available
-2. Run `python main.py report --v6-geomean` to see v6-geomean picks for 2026
-3. Bet $37.50/round on picks #1-4, $12.50/round on picks #5-8 (E8 cash-out, score-tiered)
+2. Run `python main.py report --v6-geomean` to see picks (scores generated for all 8)
+3. Confirm pick count strategy before placing bets (see Pick Count / Threshold Analysis;
+   leaning fixed-5 or threshold > 0.50 — decision pending additional analysis).
+   Score-tiered: $37.50/round on top-4 picks, $12.50/round on remaining picks, E8 cash-out.
 4. Run `python main.py track` after each round to update payouts
 
 ## V3 Attempt — region_top4_net_avg (2026-03-01, REVERTED)
