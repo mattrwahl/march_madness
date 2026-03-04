@@ -497,17 +497,20 @@ V6B_BOUNDS = [
 # Pre-specified geomean weights for v6-fixed-8-geomean (coreB feature set).
 # Derived from single-feature model results: w_i = geomean(SFM_val_i, SFM_test_i),
 # then normalized so weights sum to 1.
-#   seed_rank_gap:     val=+6.52u  test=+5.83u  geomean=6.165 -> w=0.2795
-#   conf_tourney_wins: val=+9.55u  test=+5.27u  geomean=7.094 -> w=0.3217
-#   dfi:               val=+6.95u  test=+2.87u  geomean=4.466 -> w=0.2025
-#   tsi:               val=+5.21u  test=+3.60u  geomean=4.331 -> w=0.1963
+#   seed_rank_gap:     val=+6.52u  test=+5.83u  geomean=6.165 -> w=-0.2795 (negative: under-seeded = better)
+#   conf_tourney_wins: val=+9.55u  test=+5.27u  geomean=7.094 -> w=+0.3217
+#   dfi:               val=+6.95u  test=+2.87u  geomean=4.466 -> w=+0.2025
+#   tsi:               val=+5.21u  test=+3.60u  geomean=4.331 -> w=+0.1963
+# Sign correction: seed_rank_gap lower (more negative = more under-seeded) = better bet.
+# The SFM optimizer used bounds (-3.0, 0.0) for this feature; geomean uses magnitude
+# only, so the negative sign must be reapplied explicitly.
 _V6_GM = np.array([
     np.sqrt(6.52 * 5.83),   # seed_rank_gap
     np.sqrt(9.55 * 5.27),   # conf_tourney_wins
     np.sqrt(6.95 * 2.87),   # dfi
     np.sqrt(5.21 * 3.60),   # tsi
 ])
-V6_GEOMEAN_W = _V6_GM / _V6_GM.sum()
+V6_GEOMEAN_W = (_V6_GM / _V6_GM.sum()) * np.array([-1.0, 1.0, 1.0, 1.0])
 
 
 def _build_feature_matrix_v6(teams: list[dict], features: list) -> np.ndarray:

@@ -56,8 +56,8 @@ pools — they have not yet earned their bracket slot. This is enforced in `load
 
 ### Flat (PRIMARY for v6-geomean)
 - Bet $25 each round independently per team. Total $200/yr.
-- Tiered conviction hurts v6-geomean: flat +29.22u vs tiered +24.05u (-5.17u).
-  The big winners (Loyola 2018, Oregon St 2021, Auburn 2019) land in the lower score ranks.
+- Tiered comparison has not been re-run after the 2026-03-03 sign fix on seed_rank_gap.
+  With original (incorrect) weights: flat +29.22u vs tiered +24.05u. Re-evaluate before using tiered.
 
 ### Overlap-Tiered (PRIMARY for V2 — legacy)
 - Pool = fixed-8 V2 picks (always 8 teams).
@@ -103,13 +103,13 @@ Team stops being bet on after winning a game in the target round:
 - **4 features**: seed_rank_gap, conf_tourney_wins, dfi, tsi (coreB set)
 - **Fixed pre-specified weights** derived from geomean(SFM_val, SFM_test) per feature;
   no joint optimization — avoids weight collapse on 8-season training set.
-- Weights: srg=0.2795, ctw=0.3217, dfi=0.2025, tsi=0.1963
-- **Train (8 seasons)**: +18.18u  avg +2.27u/yr
-- **Val (2023+2024)**: +6.51u  (+4.664u / +1.850u)  — beats V2 gate (+2.08u) by +4.43u
-- **Test (2025)**: +4.53u  (Michigan S16 +1.26u, Ole Miss S16 +2.00u, Drake R32 +1.25u)
-- **Total (11 seasons)**: +29.22u flat  ROI/pick: +0.332
+- Weights: srg=-0.2795, ctw=+0.3217, dfi=+0.2025, tsi=+0.1963 (sign corrected 2026-03-03)
+- **Train (8 seasons)**: +19.45u  avg +2.43u/yr
+- **Val (2023+2024)**: +4.37u  (+0.837u / +3.533u)  — beats V2 gate (+2.08u) by +2.29u
+- **Test (2025)**: +4.68u  (Michigan S16 +1.26u, McNeese R32 +1.48u, Drake R32 +1.25u)
+- **Total (11 seasons)**: +28.50u flat  ROI/pick: +0.324
 - Weights saved in `mm_model_weights` with `notes LIKE 'model=v6-geomean %'` (id=20)
-- **Tiered hurts**: flat +29.22u vs tiered +24.05u — big winners rank 5-8 by model score
+- **Tiered**: not re-run after sign fix — re-evaluate before using tiered for v6-geomean
 - Run: `python main.py train --v6-geomean`
 
 ### Geomean Weight Derivation
@@ -118,13 +118,16 @@ each feature run in isolation on 8 train seasons, evaluated on val+test:
 
 | Feature | SFM Val | SFM Test | Geomean | Weight |
 |---------|---------|---------|---------|--------|
-| seed_rank_gap | +6.52u | +5.83u | 6.165 | 0.2795 |
-| conf_tourney_wins | +9.55u | +5.27u | 7.094 | 0.3217 |
-| dfi | +6.95u | +2.87u | 4.466 | 0.2025 |
-| tsi | +5.21u | +3.60u | 4.331 | 0.1963 |
+| seed_rank_gap | +6.52u | +5.83u | 6.165 | **-0.2795** |
+| conf_tourney_wins | +9.55u | +5.27u | 7.094 | +0.3217 |
+| dfi | +6.95u | +2.87u | 4.466 | +0.2025 |
+| tsi | +5.21u | +3.60u | 4.331 | +0.1963 |
 
 Rationale: geomean penalizes features strong on one split but weak on another;
 balances both val and test signal without adding a new optimization pass on the same data.
+Sign correction (2026-03-03): seed_rank_gap weight is negative because lower (more
+under-seeded) = better bet. The SFM optimizer used bounds (-3, 0); geomean uses
+magnitude only, so the negative sign is re-applied explicitly in `features.py`.
 
 ### Fixed-weight Comparison (equal / geomean / borda)
 Run on the same coreB feature set (srg, ctw, dfi, tsi), evaluated all 11 seasons:
@@ -132,7 +135,7 @@ Run on the same coreB feature set (srg, ctw, dfi, tsi), evaluated all 11 seasons
 | Method | Val | Test | Total |
 |--------|-----|------|-------|
 | Equal (0.25 each) | +4.04u | +2.68u | — |
-| **Geomean** | **+6.51u** | **+4.53u** | **+29.22u** |
+| **Geomean (sign-corrected)** | **+4.37u** | **+4.68u** | **+28.50u** |
 | Borda count | +4.77u | +0.13u | — |
 
 Borda weakness: structurally over-democratic; a team ranked #1 on one feature and
@@ -171,18 +174,18 @@ Borda weakness: structurally over-democratic; a team ranked #1 on one feature an
 ```
 Strategy                   Train+Val    Test      Budget/yr   ROI/pick
 overlap-tiered V2          +43.19u    +3.97u      $200        varies
-fixed flat/E8 v6-geomean   +24.69u    +4.53u      $200        +0.332   <-- NEW PRIMARY
+fixed flat/E8 v6-geomean   +23.82u    +4.68u      $200        +0.324   <-- NEW PRIMARY
 fixed tiered/E8 V2         +34.37u    +3.14u      $200        +0.196
 fixed flat/E8 V2           +32.62u    +3.29u      $200        +0.185
 variable flat/E8 V2        +21.89u    +1.58u      var         +0.547/pick
 fixed flat/E8 V1           +12.70u    -0.65u      $200        --  archived
 ```
-Note: v6-geomean train+val = +24.69u (10 seasons); total 11 seasons = +29.22u.
+Note: v6-geomean train+val = +23.82u (10 seasons); total 11 seasons = +28.50u.
 
 ## Composite Feature Indices (V5/V6 only)
 
 Computed in `compute_composite_features()` in `features.py`:
-- **dfi** (Defensive Friction Index) = (opp_efg_pct + def_rank_norm) / 2
+- **dfi** (Defensive Friction Index) = opp_efg_pct + opp_3p_pct
   Lower raw = harder to score on. In V6 features list as `negate=True` so higher z = better.
   Note: highly correlated with opp_efg_pct (r=+0.887) — partially redundant.
 - **tsi** (Tempo Stability Index) = tempo_std / mean_pace
@@ -313,15 +316,18 @@ without a second normalization pass.
 |-----------|----------|-------------|-----------|------------|-------------|
 | >= +0.50 | 4.4 | +0.231 | +0.217 | +0.558 | +12.3u |
 | >= +0.25 | 7.6 | +0.257 | +0.273 | +0.362 | +22.5u |
-| **Fixed-8** | **8.0** | **best** | **best** | **best** | **+29.2u** |
+| **Fixed-8** | **8.0** | **best** | **best** | **best** | **+28.5u** |
 | Expand to 12 | 12.0 | +0.175 | +0.342 | +0.358 | +29.4u |
+
+Note: threshold rows computed with original (incorrect) sign on seed_rank_gap;
+fixed-8 total updated to +28.5u to reflect corrected-sign weights. Conclusion unchanged.
 
 **Conclusion**: Fixed-8 flat is already optimal. Three reasons:
 1. All 8 composite scores are positive every season (range 0.13-1.49) — the model
    has already gated on quality; there is no dead weight to cut.
-2. The biggest winners consistently rank **5-8 by model score**: Loyola Chicago 2018
-   (#8, +3.39u), San Diego State 2023 (#7, +2.91u), Oregon State 2021 (#4, +4.31u),
-   Auburn 2019 (#6, +2.95u), Duquesne 2024 (#8, +2.23u), Ole Miss 2025 (#8, +2.00u).
+2. The biggest winners span all 8 score ranks: Loyola Chicago 2018 (#1, +2.34u),
+   Oregon State 2021 (#2, +4.31u), NC State 2024 (#2, +4.01u), Nevada 2018 (#5, +3.44u),
+   Liberty 2019 (#7, +2.48u), McNeese 2025 (#3, +1.48u).
    The score identifies direction (team is better than seeded), not magnitude of upside.
 3. Raising the threshold cuts these picks and loses -6.7u total vs fixed-8.
    Expanding to 12 picks adds low-conviction losers and halves ROI/pick.

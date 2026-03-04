@@ -14,7 +14,7 @@ market pricing is most likely to be stale relative to true team quality.
 
 **Current primary model:** `v6-fixed-8-geomean` — 4 features, pre-specified geomean
 weights, fixed 8 picks per year, flat $25/pick, E8 cash-out.
-Total across 11 seasons (2014-2025): **+29.22u**. Val: **+6.51u**. Test 2025: **+4.53u**.
+Total across 11 seasons (2014-2025): **+28.50u**. Val: **+4.37u**. Test 2025: **+4.68u**.
 
 ---
 
@@ -49,12 +49,12 @@ This is intentionally conservative. Profits compound through winning rounds, but
 never wipes prior gains. The result is asymmetric upside: a team that wins 3 rounds
 generates 3 independent profits; a team that loses R64 costs only one $25 stake.
 
-**Why flat and not tiered for v6-geomean:** The biggest winners in the v6-geomean
-model consistently rank 5-8 by composite score — Loyola Chicago 2018 (#8, +3.39u),
-San Diego State 2023 (#7, +2.91u), Oregon State 2021 (#4, +4.31u), Auburn 2019
-(#6, +2.95u), Duquesne 2024 (#8, +2.23u), Ole Miss 2025 (#8, +2.00u). Front-loading
-stakes on the top-4 systematically under-bets these picks. Over 11 seasons, tiered
-conviction costs -5.17u relative to flat ($24.05u vs $29.22u).
+**Why flat and not tiered for v6-geomean:** The biggest winners span all 8 score ranks
+with corrected-sign weights — Loyola Chicago 2018 (#1, +2.34u), Oregon State 2021 (#2,
++4.31u), NC State 2024 (#2, +4.01u), Nevada 2018 (#5, +3.44u), Liberty 2019 (#7,
++2.48u). The composite score identifies *direction* (under-seeded and peaking), not
+the magnitude of tournament upside. Tiered comparison has not been re-run after the
+2026-03-03 sign fix — re-evaluate before using tiered for v6-geomean.
 
 ### Cash-Out Rule
 Teams are bet through a maximum of 3 rounds (R64, R32, S16), cashing out after winning
@@ -100,9 +100,9 @@ each season, making the model self-calibrating across years with different talen
 
 | # | Feature | Direction | Rationale |
 |---|---------|-----------|-----------|
-| 1 | `seed_rank_gap` | lower = better | `net_rank - (seed × 10)`. Negative = under-seeded. The primary mispricing signal. Weight is negative (under-seeded = better). |
+| 1 | `seed_rank_gap` | lower = better | `net_rank - (seed × 10)`. Negative = under-seeded. The primary mispricing signal. Weight is **negative** (under-seeded = better; sign-corrected 2026-03-03). |
 | 2 | `conf_tourney_wins` | higher = better | Games won in conference tournament. Hottest teams entering the NCAA field. Highest combined SFM signal: val +9.55u, test +5.27u. |
-| 3 | `dfi` | lower raw = better | Defensive Friction Index: `(opp_efg_pct + def_rank_norm) / 2`. Composite defensive quality. Negated before scoring so higher z = better. |
+| 3 | `dfi` | lower raw = better | Defensive Friction Index: `opp_efg_pct + opp_3p_pct`. Composite defensive quality. Negated before scoring so higher z = better. |
 | 4 | `tsi` | lower raw = better | Tempo Stability Index: `tempo_std / mean_pace`. Functions in practice as a defensive rank proxy (r=+0.66 with def_rank). Negated before scoring. |
 
 All 4 are z-scored per feature within the eligible field each season. The composite
@@ -130,7 +130,7 @@ attempts; only `dfi` and `tsi` survived into the final v6-geomean model.
 
 | Index | Formula | Notes |
 |-------|---------|-------|
-| **dfi** | `(opp_efg_pct + def_rank_norm) / 2` | Retained in v6-geomean. Highly correlated with opp_efg_pct (r=+0.887) — partially redundant but adds def_rank signal. |
+| **dfi** | `opp_efg_pct + opp_3p_pct` | Retained in v6-geomean. Highly correlated with opp_efg_pct (r=+0.887) — partially redundant; adds three-point defense signal. |
 | **tsi** | `tempo_std / mean_pace` | Retained in v6-geomean. Intended as tempo consistency; functions as def_rank proxy (r=+0.660). |
 | **cpi** | `(oreb_pct - tov_ratio) / 2` | Possession control index. Dominated by oreb_pct (r=+0.596); tov_ratio partially cancels. Not used in v6-geomean. |
 | **ftli** | `ft_pct × opp_foul_rate` | Free throw leverage. Modest predictive value. Not used in v6-geomean. |
@@ -183,15 +183,17 @@ generalize across both unseen splits without re-running optimization on the full
 
 | Feature | SFM Val | SFM Test | Geomean | Final Weight |
 |---------|---------|---------|---------|-------------|
-| `seed_rank_gap` | +6.52u | +5.83u | 6.165 | **0.2795** |
-| `conf_tourney_wins` | +9.55u | +5.27u | 7.094 | **0.3217** |
-| `dfi` | +6.95u | +2.87u | 4.466 | **0.2025** |
-| `tsi` | +5.21u | +3.60u | 4.331 | **0.1963** |
+| `seed_rank_gap` | +6.52u | +5.83u | 6.165 | **-0.2795** |
+| `conf_tourney_wins` | +9.55u | +5.27u | 7.094 | **+0.3217** |
+| `dfi` | +6.95u | +2.87u | 4.466 | **+0.2025** |
+| `tsi` | +5.21u | +3.60u | 4.331 | **+0.1963** |
 
 `conf_tourney_wins` gets the highest weight (0.322) because it has both the strongest
 val signal and reasonable test stability. `seed_rank_gap` gets the second-highest (0.280)
-because it is the most stable feature: its val and test results are nearly identical
-(ratio 0.89), meaning it generalizes without decay.
+because it is the most stable feature (val/test ratio 0.89). Its weight is **negative**:
+lower seed_rank_gap = more under-seeded = better bet. The SFM optimizer found bounds
+(-3.0, 0.0); the geomean procedure uses magnitude only, so the sign is re-applied
+explicitly in `features.py` (sign-corrected 2026-03-03).
 
 ### Objective Function (V2 Fixed-8, legacy)
 Joint DE optimization — maximize total units won, L2 regularized:
@@ -239,8 +241,11 @@ Summary of sweep results:
 |-----------|----------|-----------|-----------|----------------|
 | >= +0.50 | 4.4 | +1.74u | +2.23u | +12.3u |
 | >= +0.25 | 7.6 | +3.55u | +2.53u | +22.5u |
-| **Fixed-8** | **8.0** | **+6.51u** | **+4.53u** | **+29.2u** |
+| **Fixed-8** | **8.0** | **+4.37u** | **+4.68u** | **+28.5u** |
 | Expand to 12 | 12.0 | +8.22u | +4.30u | +29.4u |
+
+Note: threshold rows computed with original (incorrect) sign; fixed-8 row updated
+to reflect corrected-sign weights. Conclusion (fixed-8 optimal) is unchanged.
 
 Note: the 12-pick expansion shows better val but that is 2 seasons of noise. Train
 and test both decline; ROI/pick drops from +0.332 to +0.175.
@@ -329,16 +334,19 @@ or regularization strength. Abandoned in favor of pre-specified geomean weights.
 Same 4-feature coreB set (srg, ctw, dfi, tsi). Weights derived from geomean(SFM_val,
 SFM_test) per feature — no joint optimization. See Weight Determination above.
 
-Results:
+Results (sign-corrected 2026-03-03):
 ```
-Train (8 seasons):  +18.18u   avg +2.27u/yr
-Val   (2023+2024):  +6.51u    (+4.664u / +1.850u)   beats V2 gate by +4.43u
-Test  (2025):       +4.53u    Michigan S16 +1.26u, Ole Miss S16 +2.00u, Drake R32 +1.25u
-Total (11 seasons): +29.22u   ROI/pick: +0.332
+Train (8 seasons):  +19.45u   avg +2.43u/yr
+Val   (2023+2024):  +4.37u    (+0.837u / +3.533u)   beats V2 gate by +2.29u
+Test  (2025):       +4.68u    Michigan S16 +1.26u, McNeese R32 +1.48u, Drake R32 +1.25u
+Total (11 seasons): +28.50u   ROI/pick: +0.324
 ```
 
-Tiered conviction tested and rejected: flat +29.22u vs tiered +24.05u (-5.17u).
+Sign fix note: original (incorrect) positive weight for seed_rank_gap rewarded
+over-seeded teams. Fix costs ~0.7u total vs original but correctly picks NC State 2024
+(11-seed, 5 conf wins, E8) which the original model missed.
 Variable-N / threshold sweep: fixed-8 is already optimal (see section above).
+Tiered comparison not re-run after sign fix.
 Weights stored in `mm_model_weights` with `notes LIKE 'model=v6-geomean %'` (id=20).
 
 ---
@@ -349,14 +357,15 @@ Weights stored in `mm_model_weights` with `notes LIKE 'model=v6-geomean %'` (id=
 Strategy                   Train+Val    Test 2025   Budget/yr   Notes
 ---------------------------------------------------------------------------
 overlap-tiered V2          +43.19u     +3.97u       $200        V2 legacy; variable-N signal
-v6-fixed-8-geomean         +24.69u     +4.53u       $200        CURRENT PRIMARY (flat only)
+v6-fixed-8-geomean         +23.82u     +4.68u       $200        CURRENT PRIMARY (flat only)
 score-tiered V2            +34.37u     +3.14u       $200        V2 legacy
 flat V2                    +32.62u     +3.29u       $200        V2 legacy
 variable-N V2              +21.89u     +1.58u       varies      4 picks/yr; +0.547u/pick ROI
 flat V1                    +12.70u     -0.65u       $200        archived
 ```
 
-Note: v6-geomean train+val covers 10 seasons (+24.69u); total 11 seasons = +29.22u.
+Note: v6-geomean train+val covers 10 seasons (+23.82u); total 11 seasons = +28.50u.
+v6-geomean weights sign-corrected 2026-03-03 (seed_rank_gap weight now negative).
 The overlap-tiered V2 total includes all 11 seasons at +43.19u but relies on a two-model
 system with higher complexity; v6-geomean is the simpler, better-generalized primary model.
 
@@ -390,7 +399,7 @@ The ratio of SFM_test to SFM_val indicates generalization:
 **3. Fixed-weight comparison (equal / geomean / borda):**
 All three methods applied to the same coreB feature set across 11 seasons:
 - Equal weights (0.25 each): val=+4.04u, test=+2.68u
-- **Geomean weights**: val=+6.51u, test=+4.53u — clear winner
+- **Geomean weights (sign-corrected)**: val=+4.37u, test=+4.68u — best test; clear winner overall
 - Borda count (rank-sum): val=+4.77u, test=+0.13u
 
 Borda's weakness: structurally over-democratic — a team ranked #1 on one feature
