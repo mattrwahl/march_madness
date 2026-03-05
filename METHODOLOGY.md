@@ -13,8 +13,8 @@ entire bracket. We are looking for a specific, repeatable edge in a subset of ga
 market pricing is most likely to be stale relative to true team quality.
 
 **Current primary model:** `v6-fixed-8-geomean` — 4 features, pre-specified geomean
-weights, score-tiered ($37.50/$12.50 per pick), E8 cash-out. **2026 pick count TBD**
-(leaning fixed-5; see Pick Count and Threshold Analysis section).
+weights, score-tiered ($37.50/$12.50 per pick), E8 cash-out. **2026 pick rule: top-5 OR
+score > 0.50** (min 5, expand if additional teams clear threshold; avg ~5.6/yr).
 Score-tiered total (11 seasons): **+9.92u** (+0.90u/yr). Val+Test: **+1.25u**. Test 2025: **+0.69u**.
 
 > **Note (2026-03-04 data corrections):** Prior stats (+34.34u tiered) were inflated ~3-4x by
@@ -283,22 +283,36 @@ Per-season pick counts at threshold > 0.50:
 2021: 4 | 2022: 5 | 2023: 3 | 2024: 4 | 2025: 6
 ```
 
-### 2026 Strategy Status — OPEN (decision pending)
+### 2026 Strategy Decision — FINALIZED (2026-03-04)
 
-No final pick-count strategy has been locked in for 2026. Leading candidates:
+**Pick rule: top-5 OR score > 0.50 (whichever yields more picks).**
 
-- **Fixed-5** (leaning): best total and ROI/pick, positive on all splits, simple and
-  deterministic — always exactly 5 picks regardless of field conviction.
-- **Threshold > 0.50** (alternative): adaptive to field quality, nearly identical
-  performance to fixed-5, provides a natural quality gate for low-conviction years.
-- **Hybrid (threshold > 0.50 with fixed-5 floor)**: not yet run; would combine
-  adaptivity with a guaranteed minimum of 5 annual bets.
+Equivalent formulation: select all teams with composite score > 0.50; if fewer than 5
+qualify, fill to 5 from the next-highest scoring teams. Always at least 5 picks;
+expands when additional teams demonstrate clear model conviction.
 
-**Overfitting concern**: 11 seasons is a thin sample. The 2.9u advantage of fixed-5 over
-fixed-8 is plausible (fewer low-conviction bets) but not statistically robust at this sample
-size. The pick-count decision will be finalized before 2026 Selection Sunday (~March 15-16).
-Until then, the code generates scores for all 8 picks; the final betting set can be trimmed
-at bet placement time without code changes.
+**Rationale:**
+- Fixed-5 was the strongest single-N strategy (+9.81u total, +0.178 ROI/pick). The
+  minimum-5 floor captures this baseline regardless of field conviction.
+- Threshold > 0.50 adds teams with genuine model signal above the mean. In high-conviction
+  years (2014, 2015, 2016, 2017, 2025), 6-7 teams score above 0.50 — all worth including.
+- In low-conviction years (2018-2024 mostly), the floor kicks in and we always bet 5.
+  The 0.50 threshold doesn't force us to skip bets when the field is compressed.
+- The rule is deterministic and requires no judgment call at bet time.
+
+**Expected pick counts per year (based on historical distribution):**
+```
+2014: 7  |  2015: 6  |  2016: 7  |  2017: 6  |  2018: 5  |  2019: 5
+2021: 5  |  2022: 5  |  2023: 5  |  2024: 5  |  2025: 6    avg ~5.6/yr
+```
+
+**Bet sizing:** Score-tiered — top-4 picks by composite score bet $37.50/round;
+picks 5+ (those added by the threshold expansion) bet $12.50/round. E8 cash-out.
+
+*Note: the exact combined rule (max(5, count_where_score > 0.50)) has not been run as
+a single backtest; the components (fixed-5 and threshold > 0.50) were analyzed separately
+and both outperform fixed-8. The combined rule will produce results between or equal to
+the two components depending on the year.*
 
 ---
 
@@ -530,10 +544,10 @@ march_madness/
 
 1. Run `python main.py backfill --season 2026` after Selection Sunday (mid-March).
    All 6 steps must complete, especially Step 6 (conf tournament data).
-2. Run `python main.py report --v6-geomean` to review picks (scores generated for all 8).
-3. Confirm pick count strategy before placing bets (see Pick Count and Threshold Analysis;
-   leaning fixed-5 or threshold > 0.50 — decision pending additional analysis).
-   Score-tiered: $37.50/round on top-4 picks, $12.50/round on remaining picks, E8 cash-out.
+2. Run `python main.py report --v6-geomean` to see scores for all 8 eligible picks.
+3. Apply the pick rule: **bet all teams with score > 0.50, minimum 5 picks** (fill from
+   next-highest scorers if fewer than 5 clear the threshold).
+   Score-tiered: $37.50/round on top-4 picks by score, $12.50/round on picks 5+, E8 cash-out.
 4. Run `python main.py track` after each round to update rolling payouts.
 
 ---

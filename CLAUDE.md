@@ -2,9 +2,9 @@
 
 ## Project Purpose
 Identify under-seeded NCAA Tournament teams (seeds 5-12) and bet using score-tiered $37.50/$12.50/pick
-strategy. Primary model is **v6-fixed-8-geomean** (4 features, geomean weights, no
-optimizer). **2026 pick count TBD** — leaning fixed-5 or threshold > 0.50 (currently fixed-8);
-see Pick Count / Threshold Analysis section. Secondary legacy: overlap-tiered V2.
+strategy. Primary model is **v6-fixed-8-geomean** (4 features, geomean weights, no optimizer).
+**2026 pick rule: top-5 OR score > 0.50** (min 5, expand if additional teams clear the
+threshold; avg ~5.6/yr). Secondary legacy: overlap-tiered V2.
 
 ## Stack
 - **Python 3.12** — all pipeline code
@@ -214,10 +214,12 @@ N=8: train +6.99u, val -0.30u, test +0.23u, total +6.92u, ROI/pk +0.079  (curren
 Fixed-5 (reference): train +8.55u, val +0.70u, test +0.56u, total +9.81u, ROI/pk +0.178
 ```
 
-**2026 strategy: OPEN — pending final decision.** Leading candidates are fixed-5 and
-threshold > 0.50. Hybrid (threshold > 0.50, min-5 floor) not yet evaluated.
-Overfitting caveat: 11 seasons; gap between N=5 and N=8 is plausible but not robust.
-Decision to be finalized before Selection Sunday (~March 15-16).
+**2026 strategy FINALIZED (2026-03-04): top-5 OR score > 0.50 (min 5, expand if more
+teams clear threshold).** Combines fixed-5 baseline with a quality gate that captures
+genuine high-conviction years. Expected ~5.6 picks/yr (5 in most years; 6-7 in high-
+conviction years like 2014/2015/2016/2017/2025). Score-tiered: top-4 picks $37.50/round,
+picks 5+ $12.50/round, E8 cash-out. Deterministic — no judgment call at bet time.
+Historical pick counts: 2014:7, 2015:6, 2016:7, 2017:6, 2018-2024:5, 2025:6.
 
 ## Risk Profile (Bootstrap Validation — corrected 2026-03-04)
 
@@ -327,10 +329,10 @@ python march_madness/analyze_v6_threshold.py   # v6-geomean score threshold swee
 
 ## 2026 Workflow
 1. Run `python main.py backfill --season 2026` after Selection Sunday data is available
-2. Run `python main.py report --v6-geomean` to see picks (scores generated for all 8)
-3. Confirm pick count strategy before placing bets (see Pick Count / Threshold Analysis;
-   leaning fixed-5 or threshold > 0.50 — decision pending additional analysis).
-   Score-tiered: $37.50/round on top-4 picks, $12.50/round on remaining picks, E8 cash-out.
+2. Run `python main.py report --v6-geomean` to see scores for all 8 eligible picks
+3. Apply pick rule: **bet all teams with composite score > 0.50, minimum 5 picks**
+   (fill to 5 from next-highest scorers if fewer than 5 clear the threshold)
+   Score-tiered: $37.50/round on top-4 picks by score, $12.50/round on picks 5+, E8 cash-out
 4. Run `python main.py track` after each round to update payouts
 
 ## V3 Attempt — region_top4_net_avg (2026-03-01, REVERTED)
